@@ -16,5 +16,6 @@ class ClinicalTrajectoryDataset(Dataset):
             "actions":  torch.from_numpy(r["actions"]).long(),
             "next_obs": torch.from_numpy(r["next_obs"]).float(),
             "outcomes": torch.from_numpy(r["outcomes"]).float(),
+            "diag_class": torch.tensor(r["diag_class"], dtype=torch.long),
             "pathology_id": torch.tensor(r["pathology_id"], dtype=torch.long),
         }

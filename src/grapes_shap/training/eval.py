@@ -10,6 +10,7 @@ def evaluate_all(ens, enc, gnn, kg, val_loader, medqa_queries,
     nf, adj, ew, mask = kg.subgraph(list(range(min(6, kg.n))))
     all_mu, all_std, all_y = [], [], []
     all_ep, all_al = [], []
+    all_diag = []
 
     with torch.no_grad():
         for batch in tqdm(val_loader, desc="  Evaluating", leave=False):
@@ -25,12 +26,14 @@ def evaluate_all(ens, enc, gnn, kg, val_loader, medqa_queries,
             all_mu.append(mu.cpu()); all_std.append(std.cpu())
             all_y.append(outcomes.cpu())
             all_ep.append(ep.cpu()); all_al.append(al.cpu())
+            all_diag.append(batch["diag_class"].cpu())
 
     mu   = torch.cat(all_mu).numpy()
     std  = torch.cat(all_std).numpy()
     y    = torch.cat(all_y).numpy()
     ep   = torch.cat(all_ep).numpy()
     al   = torch.cat(all_al).numpy()
+    diag = torch.cat(all_diag).numpy()
 
     # Regression metrics per outcome
     mae    = np.abs(mu - y).mean()
@@ -38,9 +41,10 @@ def evaluate_all(ens, enc, gnn, kg, val_loader, medqa_queries,
     cov_1s = float((np.abs(y - mu) < std).mean())
     ece    = float(np.abs(np.abs(y - mu) - std).mean())
 
-    # Binary classification metrics (primary diagnosis: argmax)
+    # Diagnosis classification: does the model rank the TRUE pathology highest?
+    # `true_class` = rank of the ground-truth pathology within the differential.
     pred_class  = mu.argmax(axis=1)
-    true_class  = y.argmax(axis=1)
+    true_class  = diag
     acc = accuracy_score(true_class, pred_class)
     f1  = f1_score(true_class, pred_class, average="macro", zero_division=0)
 

@@ -86,13 +86,13 @@ def plot_dataset_overview(processed_train: List[Dict],
     plt.colorbar(im, ax=ax5).ax.yaxis.set_tick_params(color="#8892a4", labelsize=7)
     ax_style(ax5, "Differential Diagnosis Probability Heatmap (first 60 patients)")
 
-    # 6. Symptom activation frequency
+    # 6. Evidence activation frequency
     ax6 = fig.add_subplot(gs[1, 2:4])
     sym_slots = np.array([r["obs"][0, 2:34] for r in processed_train[:5000]])
     sym_freq  = sym_slots.mean(axis=0)
     ax6.bar(range(len(sym_freq)), sym_freq, color=VIOLET, edgecolor="#0f1117", linewidth=0.3)
-    ax_style(ax6, "Symptom Feature Activation Frequency (Train Set)")
-    ax6.set_xlabel("Symptom slot index", color="#8892a4", fontsize=8)
+    ax_style(ax6, "Evidence Feature Activation Frequency (Train Set)")
+    ax6.set_xlabel("Evidence slot index", color="#8892a4", fontsize=8)
     ax6.set_ylabel("Activation rate", color="#8892a4", fontsize=8)
 
     # 7. Trajectory length histogram
@@ -125,15 +125,13 @@ def plot_dataset_overview(processed_train: List[Dict],
     stats = [
         ("DDXPlus patients", f"{len(processed_train)+len(processed_val)+len(processed_test):,}"),
         ("Unique pathologies", f"{len(preprocessor.pathology_vocab)}"),
-        ("Unique symptoms", f"{len(preprocessor.symptom_vocab)}"),
-        ("Unique antecedents", f"{len(preprocessor.antecedent_vocab)}"),
         ("Evidence types", f"{len(preprocessor.evidence_vocab)}"),
         ("Trajectory length", f"{cfg.seq_len} steps"),
         ("Obs dimensions", f"{cfg.obs_dim}"),
         ("Outcome dimensions", f"{cfg.n_outcomes}"),
     ]
     for i, (k, v) in enumerate(stats):
-        y = 0.93 - i * 0.115
+        y = 0.93 - i * 0.135
         ax9.text(0.02, y, k, color="#8892a4", fontsize=8, transform=ax9.transAxes)
         ax9.text(0.98, y, v, color=CYAN, fontsize=8, fontweight="bold",
                  ha="right", transform=ax9.transAxes)
@@ -145,6 +143,6 @@ def plot_dataset_overview(processed_train: List[Dict],
                  color="#e2e8f0", fontsize=14, fontweight="bold", y=1.01)
 
     path = FIG_DIR / "01_data_exploration.png"
-    plt.savefig(path, dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
+    plt.savefig(path, dpi=300, bbox_inches="tight", facecolor=fig.get_facecolor())
     plt.close()
     print(f"  Saved: {path}")

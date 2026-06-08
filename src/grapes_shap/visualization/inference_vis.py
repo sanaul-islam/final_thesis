@@ -119,6 +119,6 @@ def plot_inference_results(query: str, docs: List[str], shap_vals: np.ndarray,
     fig.suptitle("GRAPES-SHAP — Full Inference Results (DDXPlus + MedQA)",
                  color="#e2e8f0", fontsize=13, fontweight="bold", y=1.01)
     path = FIG_DIR / "04_inference_results.png"
-    plt.savefig(path, dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
+    plt.savefig(path, dpi=300, bbox_inches="tight", facecolor=fig.get_facecolor())
     plt.close()
     print(f"  Saved: {path}")

@@ -44,6 +44,6 @@ def plot_training_history(wm_hist, ens_hist):
     fig.suptitle("GRAPES-SHAP — Training History", color="#e2e8f0", fontsize=13, fontweight="bold")
     plt.tight_layout()
     path = FIG_DIR / "02_training_history.png"
-    plt.savefig(path, dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
+    plt.savefig(path, dpi=300, bbox_inches="tight", facecolor=fig.get_facecolor())
     plt.close()
     print(f"  Saved: {path}")

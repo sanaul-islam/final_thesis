@@ -5,6 +5,15 @@ import numpy as np
 from pathlib import Path
 from dataclasses import dataclass
 
+# Load environment variables from .env (so DEEPSEEK_API_KEY etc. are available)
+try:
+    from dotenv import load_dotenv
+    _ENV_PATH = Path(__file__).parent.parent.parent / ".env"
+    if _ENV_PATH.exists():
+        load_dotenv(_ENV_PATH, override=False)
+except Exception:
+    pass
+
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Setup output directories (relative to project root)

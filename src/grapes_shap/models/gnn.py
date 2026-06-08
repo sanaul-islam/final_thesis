@@ -24,7 +24,14 @@ class EdgeBiasedGAT(nn.Module):
         V = self.Wv(x).view(B,N,self.heads,self.dh).transpose(1,2)
         s = Q @ K.transpose(-2,-1) / math.sqrt(self.dh)
         s = s + self.We(ew.unsqueeze(-1)).permute(0,3,1,2)
-        s = s.masked_fill((adj==0).unsqueeze(1), float("-inf"))
+        # Add self-loops so every node always attends to itself. Without this,
+        # nodes with no incoming edges produce an all-masked row whose softmax
+        # is NaN (which then propagates through the whole network).
+        eye = torch.eye(N, device=adj.device, dtype=adj.dtype).unsqueeze(0)
+        adj_sl = (adj + eye).clamp(max=1.0)
+        # Use a large finite negative value instead of -inf for fp16 safety.
+        neg = torch.finfo(s.dtype).min
+        s = s.masked_fill((adj_sl == 0).unsqueeze(1), neg)
         a = self.drop(F.softmax(s, dim=-1))
         out = (a @ V).transpose(1,2).contiguous().view(B,N,-1)
         return self.norm(x + self.proj(out))

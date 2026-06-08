@@ -1,49 +1,68 @@
+import ast
 import numpy as np
 from typing import List, Dict
 from tqdm import tqdm
 from grapes_shap.config import Config
 
+
+def _as_list(value):
+    """Parse a DDXPlus field that may be a real list or a JSON/Python-literal
+    string (the HuggingFace `aai530-group6/ddxplus` dataset stores
+    DIFFERENTIAL_DIAGNOSIS and EVIDENCES as strings)."""
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = ast.literal_eval(value)
+            return parsed if isinstance(parsed, list) else []
+        except (ValueError, SyntaxError):
+            return []
+    return []
+
+
+def _evidence_base(code: str) -> str:
+    """Strip the value suffix from an evidence code, e.g.
+    'E_54_@_V_161' -> 'E_54', 'E_56_@_4' -> 'E_56', 'E_48' -> 'E_48'."""
+    return str(code).split("_@_")[0]
+
+
 class DDXPlusPreprocessor:
     """
     Converts raw DDXPlus records into trajectory tensors suitable
     for world model training.
+
+    The real HuggingFace DDXPlus schema exposes:
+      AGE, SEX, PATHOLOGY, DIFFERENTIAL_DIAGNOSIS (str), EVIDENCES (str),
+      INITIAL_EVIDENCE. Clinical signal comes from the EVIDENCES codes and
+      the differential-diagnosis probability distribution.
     """
 
     def __init__(self, cfg: Config):
         self.cfg = cfg
-        self.symptom_vocab: Dict[str, int] = {}
-        self.antecedent_vocab: Dict[str, int] = {}
         self.pathology_vocab: Dict[str, int] = {}
         self.evidence_vocab: Dict[str, int] = {}
         self.fitted = False
 
     def fit(self, records):
-        all_symptoms, all_antecedents, all_pathologies, all_evidences = set(), set(), set(), set()
+        all_pathologies, all_evidences = set(), set()
         for r in records:
-            if isinstance(r.get("SYMPTOMS", []), list):
-                for s in r.get("SYMPTOMS", []):
-                    all_symptoms.add(str(s))
-            if isinstance(r.get("ANTECEDENTS", []), list):
-                for a in r.get("ANTECEDENTS", []):
-                    all_antecedents.add(str(a))
             if r.get("PATHOLOGY"):
                 all_pathologies.add(str(r["PATHOLOGY"]))
-            if isinstance(r.get("EVIDENCES", []), list):
-                for e in r.get("EVIDENCES", []):
-                    all_evidences.add(str(e))
+            for e in _as_list(r.get("EVIDENCES")):
+                all_evidences.add(_evidence_base(e))
+            init_ev = r.get("INITIAL_EVIDENCE")
+            if init_ev:
+                all_evidences.add(_evidence_base(init_ev))
 
-        self.symptom_vocab    = {s: i for i, s in enumerate(sorted(all_symptoms))}
-        self.antecedent_vocab = {a: i for i, a in enumerate(sorted(all_antecedents))}
-        self.pathology_vocab  = {p: i for i, p in enumerate(sorted(all_pathologies))}
-        self.evidence_vocab   = {e: i for i, e in enumerate(sorted(all_evidences))}
+        self.pathology_vocab = {p: i for i, p in enumerate(sorted(all_pathologies))}
+        self.evidence_vocab  = {e: i for i, e in enumerate(sorted(all_evidences))}
         self.fitted = True
-        print(f"  Vocabulary — symptoms:{len(self.symptom_vocab)} "
-              f"antecedents:{len(self.antecedent_vocab)} "
-              f"pathologies:{len(self.pathology_vocab)} "
+        print(f"  Vocabulary — pathologies:{len(self.pathology_vocab)} "
               f"evidences:{len(self.evidence_vocab)}")
 
     def _encode_patient(self, r) -> Dict[str, np.ndarray]:
-        obs_dim = self.cfg.obs_dim
+        obs_dim   = self.cfg.obs_dim
+        feat_slots = obs_dim - 2          # slots reserved for evidence flags
         obs = np.zeros(obs_dim, dtype=np.float32)
 
         # Features 0-1: age (normalised 0-1) and sex
@@ -52,59 +71,62 @@ class DDXPlusPreprocessor:
         obs[0] = age
         obs[1] = sex
 
-        # Features 2-33: symptom binary flags (32 dim)
-        syms = r.get("SYMPTOMS", [])
-        if isinstance(syms, list):
-            for s in syms:
-                idx = self.symptom_vocab.get(str(s), -1)
-                if idx >= 0 and 2 + (idx % 32) < obs_dim:
-                    obs[2 + (idx % 32)] = 1.0
+        # Features 2..obs_dim-1: evidence binary flags
+        evs = _as_list(r.get("EVIDENCES"))
+        ev_indices = []
+        for e in evs:
+            idx = self.evidence_vocab.get(_evidence_base(e), -1)
+            if idx >= 0:
+                ev_indices.append(idx)
+                obs[2 + (idx % feat_slots)] = 1.0
 
-        # Features 34-63: antecedent flags (30 dim)
-        ants = r.get("ANTECEDENTS", [])
-        if isinstance(ants, list):
-            for a in ants:
-                idx = self.antecedent_vocab.get(str(a), -1)
-                if idx >= 0 and 34 + (idx % 30) < obs_dim:
-                    obs[34 + (idx % 30)] = 1.0
-
-        # Build a simulated trajectory by presenting evidence incrementally
-        evs = r.get("EVIDENCES", [])
-        if not isinstance(evs, list):
-            evs = []
+        # Build a simulated diagnostic trajectory: start from the initial
+        # evidence then reveal additional evidence one step at a time.
         T = self.cfg.seq_len
         obs_seq = np.zeros((T, obs_dim), dtype=np.float32)
-        actions  = np.zeros(T, dtype=np.int64)
-        obs_seq[0] = obs.copy()
-        for t in range(1, T):
-            if t - 1 < len(evs):
-                ev_idx = self.evidence_vocab.get(str(evs[t-1]), 0)
-                actions[t-1] = ev_idx % self.cfg.action_dim
-                feat_slot = 2 + (ev_idx % 32)
-                if feat_slot < obs_dim:
-                    obs_seq[t] = obs_seq[t-1].copy()
-                    obs_seq[t][feat_slot] = min(1.0, obs_seq[t-1][feat_slot] + 0.15)
-            else:
-                obs_seq[t] = obs_seq[t-1].copy()
+        actions = np.zeros(T, dtype=np.int64)
 
-        # Outcomes: differential diagnosis probabilities (up to 5 pathologies)
-        diff_diag = r.get("DIFFERENTIAL_DIAGNOSIS", [])
+        base = np.zeros(obs_dim, dtype=np.float32)
+        base[0] = age
+        base[1] = sex
+        init_idx = self.evidence_vocab.get(_evidence_base(r.get("INITIAL_EVIDENCE", "")), -1)
+        if init_idx >= 0:
+            base[2 + (init_idx % feat_slots)] = 1.0
+        obs_seq[0] = base
+        for t in range(1, T):
+            obs_seq[t] = obs_seq[t-1].copy()
+            if t - 1 < len(ev_indices):
+                ev_idx = ev_indices[t-1]
+                actions[t-1] = ev_idx % self.cfg.action_dim
+                obs_seq[t][2 + (ev_idx % feat_slots)] = 1.0
+
+        # Outcomes: top-k differential diagnosis probabilities (real distribution)
+        diff_diag = _as_list(r.get("DIFFERENTIAL_DIAGNOSIS"))
         outcomes = np.zeros(self.cfg.n_outcomes, dtype=np.float32)
-        if isinstance(diff_diag, list):
-            for k, pair in enumerate(diff_diag[:self.cfg.n_outcomes]):
-                if isinstance(pair, (list, tuple)) and len(pair) == 2:
-                    outcomes[k] = float(pair[1])
-        # Normalise so probabilities sum to 1
+        top_names = []
+        for k, pair in enumerate(diff_diag[:self.cfg.n_outcomes]):
+            if isinstance(pair, (list, tuple)) and len(pair) == 2:
+                outcomes[k] = float(pair[1])
+                top_names.append(str(pair[0]))
         s = outcomes.sum()
         if s > 0:
             outcomes /= s
         else:
             outcomes[0] = 1.0
 
+        # Diagnosis class = position of the TRUE pathology within the top-k
+        # differential (a meaningful, non-trivial classification target). If
+        # the true pathology is not in the top-k, default to rank 0.
+        pathology = str(r.get("PATHOLOGY", ""))
+        diag_class = 0
+        if pathology in top_names:
+            diag_class = top_names.index(pathology)
+
         return {"obs": obs_seq, "actions": actions,
                 "next_obs": np.roll(obs_seq, -1, axis=0),
                 "outcomes": outcomes,
-                "pathology_id": self.pathology_vocab.get(str(r.get("PATHOLOGY", "")), 0)}
+                "diag_class": diag_class,
+                "pathology_id": self.pathology_vocab.get(pathology, 0)}
 
     def transform(self, records) -> List[Dict]:
         processed = []

@@ -90,6 +90,7 @@ def plot_performance_dashboard(metrics: Dict):
                  f"{v:.3f}", ha="center", va="bottom", color="#e2e8f0", fontsize=7)
     style(ax5, "MAE per Outcome Variable")
     ax5.set_ylabel("MAE", color="#8892a4", fontsize=8)
+    ax5.set_xticks(range(len(outcome_names)))
     ax5.set_xticklabels(outcome_names, rotation=25, fontsize=7)
 
     # 6. Confusion matrix (top diagnosis classification)
@@ -182,7 +183,7 @@ def plot_performance_dashboard(metrics: Dict):
     fig.suptitle("GRAPES-SHAP — Performance Evaluation Dashboard (DDXPlus)",
                  color="#e2e8f0", fontsize=14, fontweight="bold", y=1.01)
     path = FIG_DIR / "03_performance_dashboard.png"
-    plt.savefig(path, dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
+    plt.savefig(path, dpi=300, bbox_inches="tight", facecolor=fig.get_facecolor())
     plt.close()
     print(f"  Saved: {path}")
 
@@ -208,7 +209,11 @@ def plot_latent_space(enc, gnn, kg, loader, cfg: Config, n_samples=2000):
     L = np.array(all_labels)[:n_samples]
 
     print(f"  Running t-SNE on {len(Z)} latent vectors...")
-    tsne = TSNE(n_components=2, perplexity=40, random_state=42, n_iter=500)
+    # scikit-learn >=1.5 renamed `n_iter` to `max_iter`; support both.
+    try:
+        tsne = TSNE(n_components=2, perplexity=40, random_state=42, max_iter=500)
+    except TypeError:
+        tsne = TSNE(n_components=2, perplexity=40, random_state=42, n_iter=500)
     Z2d  = tsne.fit_transform(Z)
 
     fig, axes = plt.subplots(1, 2, figsize=(18, 7))
@@ -240,6 +245,6 @@ def plot_latent_space(enc, gnn, kg, loader, cfg: Config, n_samples=2000):
     fig.suptitle("GRAPES-SHAP — Latent Space Visualisation (Evidence Fusion Encoder)",
                  color="#e2e8f0", fontsize=12, fontweight="bold")
     path = FIG_DIR / "05_latent_space.png"
-    plt.savefig(path, dpi=140, bbox_inches="tight", facecolor=fig.get_facecolor())
+    plt.savefig(path, dpi=300, bbox_inches="tight", facecolor=fig.get_facecolor())
     plt.close()
     print(f"  Saved: {path}")
