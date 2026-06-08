@@ -151,7 +151,10 @@ def main():
             }
         g_llm = llm.generate_medical_recommendation(
             q, g_docs, wm_results, gr.get("g_emb"), ens_outcomes)
-        g_ans = (g_llm.reasoning or "") + "\n\n" + (g_llm.recommendation or "")
+        # Score on the complete structured response (includes risk/benefit,
+        # follow-up, confidence sections), falling back to reasoning+rec.
+        g_ans = g_llm.full_text or (
+            (g_llm.reasoning or "") + "\n\n" + (g_llm.recommendation or ""))
         g_latency = b_out.latency_s + (time.time() - t0)
 
         # Scoring

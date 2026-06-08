@@ -20,6 +20,7 @@ class LLMOutput:
     recommendation: str
     confidence: float
     key_evidence: List[int]  # Indices of key documents
+    full_text: str = ""       # Complete structured response from the LLM
 
 
 class DeepSeekLLMClient:
@@ -203,7 +204,8 @@ Remember: Every claim must be supported by evidence numbers [1]-[{len(evidence_d
             reasoning=reasoning,
             recommendation=recommendation,
             confidence=confidence,
-            key_evidence=key_evidence
+            key_evidence=key_evidence,
+            full_text=response_text
         )
     
     def _extract_sections(self, text: str) -> Dict[str, str]:
@@ -281,7 +283,8 @@ Retrieved evidence suggests a systematic approach:
             reasoning=reasoning,
             recommendation=recommendation,
             confidence=0.6,
-            key_evidence=list(range(min(3, len(evidence_docs))))
+            key_evidence=list(range(min(3, len(evidence_docs)))),
+            full_text=reasoning + "\n\n" + recommendation
         )
     
     # System prompt for medical reasoning
