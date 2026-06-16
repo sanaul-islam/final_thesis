@@ -1,0 +1,1172 @@
+%==============================================================
+% Making AI More Trustworthy: Context Labelling and
+% Original-Source Tracking for Clinical Question Answering
+%
+% Thesis-format report. Compile on Overleaf (recommended) or
+% locally with:
+%   pdflatex main  ->  bibtex main  ->  pdflatex main  x2
+% Document class: report (available by default on Overleaf).
+%==============================================================
+\documentclass[11pt,a4paper]{report}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[margin=1in]{geometry}
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{array}
+\usepackage{url}
+\usepackage{caption}
+\usepackage{float}
+\usepackage[hidelinks]{hyperref}
+
+% Look in the local figures/ folder first (self-contained for Overleaf),
+% then fall back to the repository outputs folder.
+\graphicspath{{figures/}{./figures/}{../outputs/figures/paper/}}
+
+% Concise, brand-neutral references to the system.
+\newcommand{\zt}{\mathbf{z}_t}
+
+\begin{document}
+
+%==============================================================
+% TITLE PAGE
+%==============================================================
+\begin{titlepage}
+\centering
+\vspace*{1.5cm}
+{\LARGE\bfseries Making AI More Trustworthy:\\[0.35em]
+Context Labelling and Original-Source Tracking\\[0.35em]
+for Clinical Question Answering\par}
+\vspace{1.4cm}
+{\large A World-Model--Guided, Calibrated, and Interpretable\\
+Retrieval-Augmented Generation Framework\par}
+\vspace{2.2cm}
+{\large\itshape Author Name\par}
+\vspace{0.4cm}
+{\normalsize Department / Institution\par}
+{\normalsize City, Country\par}
+\vspace{2.4cm}
+{\normalsize A thesis submitted in partial fulfilment\\
+of the requirements for the degree of\\
+[Degree Title]\par}
+\vfill
+{\normalsize \today\par}
+\end{titlepage}
+
+%==============================================================
+% ABSTRACT
+%==============================================================
+\chapter*{Abstract}
+\addcontentsline{toc}{chapter}{Abstract}
+
+Large language models (LLMs) encode substantial clinical knowledge, yet they
+remain difficult to trust: they hallucinate fluent but unsupported claims, they
+rarely expose a calibrated sense of their own uncertainty, and they seldom make
+clear \emph{which} pieces of evidence drove an answer. Retrieval-augmented
+generation (RAG) reduces hallucination by grounding generation in retrieved
+documents, but the canonical \emph{retrieve--concatenate--generate} pipeline is
+reactive: it neither models the consequences of clinical decisions nor tracks
+the provenance of each statement. This thesis presents a framework that makes
+clinical question answering more trustworthy through two coupled mechanisms:
+\textbf{context labelling}---attaching structured, calibrated labels (retrieved
+evidence, causal knowledge-graph relations, a predicted diagnostic state, and an
+uncertainty estimate) to every answer---and \textbf{original-source
+tracking}---tracing each claim back to the specific source documents that
+supported it using Shapley-value attribution and explicit citations.
+
+The framework augments a mature hybrid retrieval stack with three trust-oriented
+capabilities: (i) an action-conditioned \emph{latent world model} that simulates
+how a patient state evolves and supports deliberate, tree-of-thought plan
+search; (ii) a deep-ensemble predictor that produces \emph{calibrated}
+diagnostic uncertainty with an explicit epistemic/aleatoric decomposition; and
+(iii) a Shapley-value attribution module that quantifies the marginal
+contribution of every retrieved document. The neural core---a causal
+graph-attention encoder, a gated recurrent latent-dynamics model with a
+supervised reward head, and a five-member probabilistic ensemble---contains only
+$10.1$M parameters and trains in under $20$ minutes on a single consumer GPU. On
+a corpus assembled from DDXPlus, MedMCQA, and MedQA ($100{,}000$ samples), the
+world model attains a next-state mean absolute error of $0.039$ and an expected
+calibration error of $0.029$, with a train-to-test error gap below $0.002$ MAE,
+indicating strong generalisation. In a controlled comparison against a strong
+hybrid (dense $+$ BM25) RAG baseline on ten complex clinical vignettes, the
+proposed framework improves clinical concept coverage from $0.70$ to $0.97$,
+answer-structure completeness from $0.50$ to $0.84$, and evidence grounding from
+$2.0$ to $5.1$ citations per answer; the improvement is statistically
+significant (Wilcoxon signed-rank $p=0.046$, mean $+0.27$, $95\%$ CI $\pm0.21$).
+Against four advanced-RAG pipelines (vanilla, hybrid, HyDE, and
+cross-encoder$+$MMR) run live through the same LLM, the framework leads on every
+answer-quality metric while uniquely providing calibrated uncertainty,
+per-document source attribution, and treatment-plan simulation.
+All code, configurations, and figure-generating scripts are released to support
+reproducibility.
+
+\vspace{0.5em}
+\noindent\textbf{Keywords:} trustworthy AI, retrieval-augmented generation,
+world models, uncertainty calibration, Shapley attribution, source tracking,
+clinical question answering.
+
+\tableofcontents
+
+%==============================================================
+\chapter{Introduction}
+%==============================================================
+
+\section{Background}
+Clinical decision support is among the most consequential applications of
+artificial intelligence, and large language models (LLMs) have made fluent
+medical question answering appear within reach: they encode a remarkable amount
+of textbook and guideline knowledge~\cite{singhal2023medpalm}. Yet fluency is
+not trustworthiness. Two failure modes block safe deployment. First, LLMs
+\emph{hallucinate}---they produce confident, well-formed claims that are not
+supported by any source~\cite{ji2023hallucination}. Second, they are
+\emph{opaque about confidence and provenance}: a clinician cannot easily tell
+whether an answer rests on solid evidence or on a plausible-sounding
+fabrication, nor which documents were actually decisive.
+
+Retrieval-augmented generation (RAG)~\cite{lewis2020rag} addresses the first
+failure mode by conditioning generation on retrieved documents and is now
+standard practice. Modern systems combine sparse lexical scoring
+(BM25~\cite{robertson2009bm25}) with dense
+bi-encoders~\cite{reimers2019sbert}, fuse the rankings~\cite{cormack2009rrf},
+and re-rank with cross-encoders~\cite{nogueira2019passage}. However, the
+canonical \emph{retrieve--concatenate--generate} pipeline remains
+\emph{reactive}: it treats retrieved passages as a static context window and
+delegates all reasoning, self-assessment, and provenance to the opaque forward
+pass of the LLM. For high-stakes clinical use this is not enough.
+
+\section{Rationale}
+Trust in a clinical AI system rests on three properties that the canonical RAG
+pipeline does not provide. \emph{Prospective reasoning:} good clinical practice
+simulates how a patient will respond to candidate actions before committing to
+one. \emph{Calibrated self-knowledge:} a trustworthy system must know what it
+does not know, so that an answer given with $0.95$ confidence and one given at
+the edge of the training distribution do not look identical. \emph{Provenance:}
+for auditing and accountability, a system must state \emph{which} evidence was
+decisive, not merely cite documents decoratively.
+
+This thesis argues that these three properties can be delivered by reframing the
+problem around two mechanisms. \textbf{Context labelling} attaches a structured,
+machine-checkable record to every answer: the retrieved evidence set, the
+causal knowledge-graph relations consulted, the predicted diagnostic state, and
+a calibrated uncertainty estimate. \textbf{Original-source tracking} then traces
+each claim to the specific documents that supported it, using Shapley-value
+attribution to quantify each document's marginal contribution. Together, these
+mechanisms convert an opaque generator into an auditable, calibrated, and
+source-grounded assistant.
+
+\section{Problem Statement}
+Given a clinical query $q$ and a corpus of medical documents, the goal is to
+produce an answer that is (a) grounded in retrieved evidence, (b) accompanied by
+a calibrated confidence and an explicit uncertainty decomposition, (c)
+attributable to the specific source documents that determined it, and (d)
+informed by a forward simulation of the patient's diagnostic trajectory rather
+than a single reactive pass. Formally, we require a system that jointly outputs
+an answer, a set of context labels (evidence, graph relations, predicted state,
+uncertainty), and a per-document attribution vector, while remaining compact
+enough to train and audit on commodity hardware.
+
+\section{Objectives}
+The objectives of this work are to:
+\begin{enumerate}
+\item design a RAG framework that augments hybrid retrieval with an
+action-conditioned latent world model for prospective, tree-of-thought planning;
+\item produce \emph{calibrated} predictive uncertainty with an explicit
+epistemic/aleatoric decomposition via a deep ensemble;
+\item implement \emph{original-source tracking} through Shapley-value evidence
+attribution and explicit citations;
+\item keep the neural core compact ($\sim$$10$M parameters) and trainable in
+under twenty minutes on a single consumer GPU;
+\item evaluate trustworthiness with calibration, generalisation, statistical
+significance, and a controlled comparison against a strong RAG baseline; and
+\item characterise the method's scope and limitations honestly to support
+responsible interpretation.
+\end{enumerate}
+
+\section{Methodology in Brief}
+The proposed framework is organised as a twelve-stage pipeline grouped into five
+functional blocks: \emph{retrieval}, \emph{graph reasoning}, \emph{world-model
+planning}, \emph{uncertainty}, and \emph{explanation}
+(Fig.~\ref{fig:pipeline}). A query is expanded and answered by hybrid retrieval
+and re-ranking; the grounded evidence and a causal knowledge graph are encoded
+into a latent patient state; the latent world model rolls the state forward
+under a tree-of-thought beam planner; a deep ensemble scores the outcome with
+calibrated uncertainty; a hallucination check verifies the draft; and a
+Shapley-value module attributes the answer to individual documents before the
+LLM verbalises the final, source-tracked response. Figure~\ref{fig:archdetail}
+gives the detailed neural architecture with tensor shapes and shows where
+context labels enter and where source tracking is produced.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\textwidth]{fig1_pipeline}
+  \caption{Inference pipeline for trustworthy clinical question answering. A
+  query is expanded, answered by hybrid retrieval and re-ranking, encoded with a
+  causal knowledge-graph GNN into a latent state, rolled forward by the latent
+  world model under a tree-of-thought beam planner, scored for calibrated
+  uncertainty by a deep ensemble, verified for hallucination, attributed to
+  evidence via Shapley values, and finally verbalised by the LLM with explicit
+  source tracking.}
+  \label{fig:pipeline}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\textwidth]{fig17_architecture_detailed}
+  \caption{Detailed neural architecture with tensor shapes. \emph{Context
+  labels} (patient observations, action labels, and knowledge-graph relations)
+  enter on the left; the causal GNN, evidence-fusion encoder, action-conditioned
+  causal residual, and recurrent latent dynamics form the $10.1$M-parameter
+  core; and the right-hand heads, beam planner, deep ensemble, and Shapley
+  \emph{source-tracking} module produce a calibrated, source-attributed answer.}
+  \label{fig:archdetail}
+\end{figure}
+
+\section{Scope and Challenges}
+The scope of this thesis is the design, implementation, and evaluation of the
+trust mechanisms (context labelling and source tracking) and the world-model
+core that supports them, evaluated on public clinical-QA resources. Several
+challenges shape the work. The dynamics are trained on \emph{semi-synthetic}
+trajectories constructed by revealing evidence sequentially, so the transition
+target is close to deterministic. The actions correspond to evidence
+acquisition rather than physical interventions. The knowledge graph encodes a
+stochastic causal \emph{prior} rather than a curated ontology. Fine-grained,
+imbalanced rank classification over $49$ pathologies makes macro-F1 a hard
+metric. We treat each of these as an explicit boundary of validity rather than a
+hidden assumption, and return to them in Sections~\ref{sec:discussion}
+and~\ref{sec:future}.
+
+%==============================================================
+\chapter{Literature Review}
+%==============================================================
+
+\section{Retrieval-Augmented Generation}
+RAG~\cite{lewis2020rag} and dense passage retrieval~\cite{karpukhin2020dpr}
+established the practice of conditioning generation on retrieved evidence.
+Production systems combine sparse lexical scoring
+(BM25~\cite{robertson2009bm25}) with dense bi-encoders~\cite{reimers2019sbert}
+indexed for fast search~\cite{johnson2019faiss}, fuse the ranked lists with
+reciprocal rank fusion~\cite{cormack2009rrf}, and re-rank with
+cross-encoders~\cite{nogueira2019passage} while promoting diversity through
+maximal marginal relevance~\cite{carbonell1998mmr}. Hypothetical document
+embeddings (HyDE)~\cite{gao2023hyde} improve recall by expanding queries. Our
+framework adopts this mature retrieval stack but does not stop there: it feeds
+the grounded state into a world model and tracks the provenance of every
+retrieved document.
+
+\section{World Models and Planning}
+World models learn the dynamics of an environment in a latent space and plan by
+imagining rollouts~\cite{ha2018worldmodels}. The Dreamer
+family~\cite{hafner2020dreamer,hafner2023dreamerv3} shows that latent recurrent
+dynamics support sample-efficient control. Tree-of-thought
+reasoning~\cite{yao2023tot} and chain-of-thought prompting~\cite{wei2022cot}
+bring deliberate, multi-step search to LLMs. We connect these threads by using a
+learned clinical latent-dynamics model as the transition function for a
+tree-of-thought beam search, turning reactive answering into prospective
+reasoning.
+
+\section{Uncertainty and Interpretability}
+Deep ensembles~\cite{lakshminarayanan2017ensembles} remain a strong, simple
+baseline for predictive uncertainty, and modern networks are known to be
+miscalibrated without correction~\cite{guo2017calibration}. Shapley
+values~\cite{shapley1953value,lundberg2017shap} provide an axiomatic credit
+assignment that we adapt to attribute answers to retrieved documents---the
+technical basis of original-source tracking. Self-RAG~\cite{asai2024selfrag}
+adds self-reflective critique. Our framework integrates calibrated ensembles
+and Shapley attribution natively rather than as post-hoc add-ons.
+
+\section{Clinical QA Resources}
+DDXPlus~\cite{tchango2022ddxplus} provides large-scale synthetic patients with
+evidences and differential diagnoses; MedMCQA~\cite{pal2022medmcqa} and
+MedQA~\cite{jin2021medqa} provide exam-style questions with explanations. We use
+these as, respectively, the dynamics-training source, the evidence corpus, and
+the held-out evaluation set.
+
+%==============================================================
+\chapter{Requirements and Planning}
+%==============================================================
+
+\section{Final Specifications and Requirements}
+Table~\ref{tab:requirements} lists the functional and non-functional
+requirements that the system must satisfy. The specifications follow directly
+from the trustworthiness objectives: every answer must carry context labels and
+source attribution, uncertainty must be calibrated, and the whole system must be
+reproducible on commodity hardware.
+
+\begin{table}[H]
+\caption{Functional (F) and non-functional (N) requirements.}
+\label{tab:requirements}
+\centering
+\small
+\begin{tabular}{llp{8.2cm}}
+\toprule
+\textbf{ID} & \textbf{Type} & \textbf{Requirement}\\
+\midrule
+R1 & F & Hybrid (dense $+$ sparse) retrieval with fusion and re-ranking.\\
+R2 & F & Context labels: evidence set, graph relations, predicted state,
+         uncertainty.\\
+R3 & F & Original-source tracking via per-document Shapley attribution and
+         citations.\\
+R4 & F & Calibrated uncertainty with epistemic/aleatoric decomposition.\\
+R5 & F & Prospective planning via a latent world model and beam search.\\
+R6 & N & Compact core ($\le$$15$M parameters); train in $<$$30$ min on one GPU.\\
+R7 & N & Calibration: ECE $\le 0.05$; coverage near nominal.\\
+R8 & N & Reproducibility: released code, configs, and figure scripts.\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Societal Impact}
+A clinical assistant that exposes calibrated confidence and traceable sources
+can reduce automation bias by signalling when its output should be questioned,
+and can widen access to structured clinical reasoning in settings with few
+specialists. Conversely, any decision-support tool risks over-reliance.
+Context labelling and source tracking are deliberate countermeasures: by making
+the basis of each answer visible and auditable, the system supports
+\emph{informed} use rather than blind trust, and keeps a human clinician in the
+loop as the final decision-maker.
+
+\section{Environmental Impact}
+The neural core is intentionally small ($10.1$M parameters) and trains in under
+twenty minutes on a single consumer GPU, so its training footprint is negligible
+compared with large foundation-model training. At inference, the local core adds
+only a few milliseconds per query; the dominant cost is the external LLM call,
+which the framework invokes once per answer. The economy of the design
+(Section~\ref{sec:economic}) is therefore also an environmental advantage:
+fewer and smaller computations per trustworthy answer.
+
+\section{Ethical Issues}
+The work uses only public, de-identified datasets (DDXPlus, MedMCQA, MedQA) and
+does not process real patient data. The system is a decision-\emph{support}
+tool, not an autonomous diagnostician: it surfaces evidence, confidence, and
+provenance so that a qualified clinician makes the final judgement. Because the
+training trajectories are semi-synthetic and the outcomes are
+differential-diagnosis probabilities, we are careful not to narrate them as
+survival or treatment guarantees (Section~\ref{sec:discussion}). Calibration and
+source tracking are themselves ethical safeguards against confident,
+unattributable error.
+
+\section{Standards}
+The design follows established practice for the components it reuses: BM25 for
+lexical retrieval, reciprocal rank fusion for list combination, cross-encoder
+re-ranking, maximal marginal relevance for diversity, deep ensembles for
+uncertainty, and Shapley values for attribution. Expected calibration error is
+reported following the standard binning protocol~\cite{guo2017calibration}, and
+statistical significance uses the Wilcoxon signed-rank test. Reproducibility
+follows open-science norms: code, configurations, and scripts that regenerate
+every figure and table are released.
+
+\section{Project Management Plan}
+The project was executed over an eighteen-week plan
+(Fig.~\ref{fig:gantt}) spanning literature review, data collection and cleaning,
+preprocessing and integration, model design and implementation, training and
+tuning, evaluation and statistics, comparison and analysis, and writing.
+Phases overlap where dependencies allow---for example, preprocessing began
+before model implementation was complete.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.92\textwidth]{fig21_gantt}
+  \caption{Project management plan. Eight phases over an eighteen-week schedule,
+  with deliberate overlap between data, modelling, and evaluation tasks.}
+  \label{fig:gantt}
+\end{figure}
+
+\section{Risk Management}
+Six principal risks were tracked on a likelihood--impact matrix
+(Fig.~\ref{fig:risk}). The highest-impact risk (R4, overconfident
+hallucination) is mitigated directly by the calibrated ensemble and the
+hallucination check; data-related risks (R1 semi-synthetic trajectories, R2
+class imbalance) are mitigated by honest framing and by reporting calibration
+and coverage rather than relying on macro-F1; cost and compute risks (R3, R5)
+are mitigated by the compact core and a single LLM call per query; and
+reproducibility (R6) is mitigated by releasing all code and configurations.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.95\textwidth]{fig22_risk_matrix}
+  \caption{Risk assessment matrix. Markers R1--R6 are positioned by likelihood
+  and impact; the side legend names each risk. Mitigations are described in the
+  text.}
+  \label{fig:risk}
+\end{figure}
+
+\section{Economic Analysis}
+\label{sec:economic}
+The direct project cost is dominated by external LLM API usage during
+evaluation; GPU training is brief and the datasets are open
+(Fig.~\ref{fig:economic}a). At the margin, the framework's local core lowers the
+per-query cost relative to a cloud-LLM-only design because the small local model
+absorbs the structured reasoning, leaving a single LLM call for verbalisation
+(Fig.~\ref{fig:economic}b). The result is a favourable cost profile for a
+trustworthy answer.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.95\textwidth]{fig23_economic}
+  \caption{Economic analysis. (a) Direct project cost by category. (b) Marginal
+  per-query inference cost of the proposed local-core-plus-LLM design versus a
+  cloud-LLM-only baseline.}
+  \label{fig:economic}
+\end{figure}
+
+%==============================================================
+\chapter{Design and Implementation}
+%==============================================================
+
+\section{Design Process and Methodology Overview}
+The framework is organised into five functional blocks, mapped onto the detailed
+architecture of Fig.~\ref{fig:archdetail}: hybrid graph-aware retrieval, a causal
+knowledge-graph encoder, a latent world model, calibrated uncertainty, and
+Shapley source tracking. This section specifies each block and the training
+objectives.
+
+\subsection{Hybrid Graph-Aware Retrieval}
+Given a query $q$, HyDE~\cite{gao2023hyde} generates $n_h{=}3$ hypothetical
+sub-answers that are embedded and averaged to form an expanded query
+representation. We retrieve with a dense MiniLM bi-encoder over a
+FAISS~\cite{johnson2019faiss} index and with BM25~\cite{robertson2009bm25}, and
+fuse the two ranked lists by reciprocal rank fusion
+(RRF)~\cite{cormack2009rrf},
+\begin{equation}
+\mathrm{RRF}(d)=\sum_{r\in\{\text{dense},\text{bm25}\}}\frac{1}{k+\mathrm{rank}_r(d)},
+\quad k=60 .
+\end{equation}
+A cross-encoder~\cite{nogueira2019passage} re-scores the top candidates, and
+maximal marginal relevance~\cite{carbonell1998mmr} selects a final set that
+balances relevance and diversity,
+\begin{equation}
+\mathrm{MMR}=\arg\max_{d\in\mathcal{R}\setminus\mathcal{S}}
+\big[\lambda\,\mathrm{rel}(d,q)-(1{-}\lambda)\max_{d'\in\mathcal{S}}\mathrm{sim}(d,d')\big],
+\end{equation}
+with $\lambda{=}0.6$. The selected evidence set $D$ becomes the first context
+label and the candidate pool for source tracking.
+
+\subsection{Causal Knowledge-Graph Encoder}
+A medical knowledge graph with $N{=}20$ nodes encodes a sparse stochastic causal
+prior over symptom--pathology relations. An edge-biased graph-attention
+network~\cite{velickovic2018gat} processes the graph; for heads $h$ and edge
+weights $e_{ij}$ the attention logits are
+\begin{equation}
+\alpha_{ij}^{(h)}\propto\frac{(\mathbf{W}_q x_i)^\top(\mathbf{W}_k x_j)}{\sqrt{d_h}}
++ \mathbf{W}_e\, e_{ij},
+\end{equation}
+with self-loops added for numerical stability. A masked mean pool yields a graph
+embedding $\mathbf{g}\in\mathbb{R}^{256}$. The patient trajectory
+$\mathbf{obs}\in\mathbb{R}^{T\times64}$ is encoded by an evidence-fusion
+Transformer~\cite{vaswani2017attention} with gated cross-attention to
+$\mathbf{g}$, producing latent states $\zt\in\mathbb{R}^{256}$ that serve as the
+predicted-state context label.
+
+\subsection{Latent World Model}
+The core contribution is an action-conditioned latent dynamics model. At each
+step a \emph{causal residual} computes the effect of action $a_t$ on the state,
+\begin{equation}
+\Delta\zt = s\cdot \sigma\!\big(\mathbf{W}_g[\zt,\mathbf{h}]\big)\odot
+\mathrm{MLP}\big([\zt,\mathbf{g},\mathbf{e}_{a_t}]\big),
+\end{equation}
+where $\mathbf{e}_{a_t}$ is an action embedding and $s$ a learned scale. A
+three-layer gated recurrent unit~\cite{cho2014gru} integrates the corrected
+state and action to predict the next latent state,
+\begin{equation}
+\zt[t+1] = \mathrm{h2z}\big(\mathrm{GRU}([\zt+\Delta\zt,\ \mathbf{e}_{a_t}])\big).
+\end{equation}
+Three heads decode the latent: a \emph{decoder} reconstructs the observation, a
+\emph{$\sigma$-head} emits per-dimension aleatoric uncertainty, and a
+\emph{reward head} scores each transition. The model can roll out purely in
+latent space, which is what enables prospective planning.
+
+\subsection{Tree-of-Thought Beam Planner}
+We treat plan selection as a search over the action tree with the world model as
+transition function. From the encoded state $\mathbf{z}_0$, a beam search of
+width $W{=}8$ and depth $H{=}4$ expands each beam node over the action space,
+scores the resulting transition with the trained reward head, and retains the
+top-$W$ partial plans. Terminal plans are ranked by a composite objective,
+\begin{equation}
+J(\pi) = v_\theta(\mathbf{z}_H) + \beta\!\sum_{t}r_\phi(\zt,\zt[t+1])
+- \gamma\,\bar{\sigma}(\mathbf{z}_H),
+\end{equation}
+with $\beta{=}0.5$, $\gamma{=}0.1$, replacing undirected random rollouts with a
+deliberate, reward-guided, uncertainty-aware search.
+
+\subsection{Deep-Ensemble Uncertainty}
+Five probabilistic heads~\cite{lakshminarayanan2017ensembles}, each emitting a
+Gaussian $(\mu_m,\sigma_m^2)$ over the $5$-dimensional outcome (the
+differential-diagnosis distribution), are combined as
+\begin{equation}
+\mu=\tfrac{1}{M}\sum_m\mu_m,\quad
+\underbrace{\mathrm{Var}_m(\mu_m)}_{\text{epistemic}}+
+\underbrace{\tfrac{1}{M}\sum_m\sigma_m^2}_{\text{aleatoric}}=\sigma^2_{\text{total}} .
+\end{equation}
+The decomposition separates reducible model uncertainty from irreducible data
+noise and forms the calibrated-uncertainty context label.
+
+\subsection{Shapley Source Tracking}
+Original-source tracking attributes the answer to each retrieved document $d_i$
+by its Shapley value~\cite{shapley1953value}, estimated by Monte-Carlo
+permutation sampling~\cite{lundberg2017shap} with $32$ permutations,
+\begin{equation}
+\phi_i=\mathbb{E}_{\pi}\big[v(S_i^\pi\cup\{i\})-v(S_i^\pi)\big],
+\end{equation}
+where $v(\cdot)$ is a cross-encoder relevance score of the document subset to
+$q$. The signed $\phi_i$ reveal supporting versus distracting evidence and are
+surfaced as per-claim citations.
+
+\subsection{Training Objectives}
+The world model, GNN, and encoder are trained jointly to minimise a
+reconstruction loss with latent-smoothness and uncertainty regularisers and a
+supervised reward objective,
+\begin{equation}
+\mathcal{L}_{\text{wm}} = \underbrace{\|\hat{o}-o^+\|^2}_{\text{recon}}
++ 0.01\,\|\Delta\mathbf{z}\|^2
++ 0.001\,\bar{\sigma}
++ 0.1\,\|r_\phi-r^\star\|^2 .
+\end{equation}
+The reward target $r^\star_t = (\max_k y_k)\cdot t/T$ shapes the reward head to
+prefer trajectories that drive the state toward a confident differential. The
+ensemble is trained by Gaussian negative log-likelihood,
+\begin{equation}
+\mathcal{L}_{\text{ens}}=\tfrac{1}{M}\sum_m\tfrac{1}{2}
+\Big(\log\sigma_m^2+\frac{(y-\mu_m)^2}{\sigma_m^2}\Big).
+\end{equation}
+Both stages use AdamW~\cite{kingma2015adam} with mixed-precision training.
+Key hyperparameters are listed in Table~\ref{tab:hyper}.
+
+\begin{table}[H]
+\caption{Key hyperparameters.}
+\label{tab:hyper}
+\centering
+\small
+\begin{tabular}{lll}
+\toprule
+\textbf{Group} & \textbf{Parameter} & \textbf{Value}\\
+\midrule
+\multirow{4}{*}{Architecture}
+  & latent / hidden dim         & $256$ / $512$ \\
+  & Transformer layers / heads  & $3$ / $8$ \\
+  & GNN layers (edge-biased GAT) & $3$ \\
+  & ensemble members            & $5$ \\
+\midrule
+\multirow{3}{*}{Planning}
+  & beam width $W$ / depth $H$   & $8$ / $4$ \\
+  & reward weight $\beta$        & $0.5$ \\
+  & uncertainty penalty $\gamma$ & $0.1$ \\
+\midrule
+\multirow{4}{*}{Retrieval}
+  & top-$k$ / embed dim          & $6$ / $384$ \\
+  & MMR $\lambda$ / RRF $k$       & $0.6$ / $60$ \\
+  & HyDE sub-queries             & $3$ \\
+  & SHAP permutations            & $32$ \\
+\midrule
+\multirow{3}{*}{Optimisation}
+  & WM / ensemble epochs         & $15$ / $10$ \\
+  & WM / ensemble LR             & $2\!\times\!10^{-4}$ / $10^{-3}$ \\
+  & batch size / precision       & $64$ / FP16 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Data Collection}
+We assemble $100{,}000$ samples from three public sources
+(Table~\ref{tab:data}). DDXPlus~\cite{tchango2022ddxplus} supplies patient
+records that drive world-model dynamics; MedMCQA~\cite{pal2022medmcqa} items
+become the retrievable evidence corpus; and MedQA-USMLE~\cite{jin2021medqa}
+provides held-out evaluation queries. All three are loaded from public mirrors
+without credentials and cached locally.
+
+\begin{table}[H]
+\caption{Dataset composition ($100{,}000$ samples).}
+\label{tab:data}
+\centering
+\small
+\begin{tabular}{llr}
+\toprule
+\textbf{Dataset} & \textbf{Role} & \textbf{Size}\\
+\midrule
+DDXPlus (train/val/test) & World-model dynamics & $80\text{k}/10\text{k}/10\text{k}$\\
+MedMCQA                  & Evidence corpus      & $50{,}000$ docs\\
+MedQA-USMLE              & Held-out evaluation  & $1{,}000$ queries\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Data Cleaning}
+Each DDXPlus record is parsed and validated before use. We audit the training
+split for missing pathology labels, empty differential diagnoses, empty evidence
+lists, and parse failures of the string-encoded list fields. All $80{,}000$
+training records pass these completeness checks (Fig.~\ref{fig:cleaning}a),
+confirming that the curated source requires correction of \emph{format} rather
+than removal of \emph{records}. The exploratory analysis
+(Fig.~\ref{fig:overview}) shows the cleaned distributions: patient age is
+broadly spread (mean $39.6$, standard deviation $22.7$ years), the sex split is
+near-balanced ($48.6\%$ male, $51.4\%$ female), the pathology distribution is
+led by upper-respiratory and viral conditions, and patients carry a median of
+$19$ clinical evidences each.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\textwidth]{fig13_data_overview}
+  \caption{Exploratory data analysis of the cleaned DDXPlus training split:
+  (a) patient age distribution; (b) sex distribution; (c) the fifteen most
+  frequent pathologies; and (d) the number of clinical evidences per patient.}
+  \label{fig:overview}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\textwidth]{fig14_data_cleaning}
+  \caption{Data cleaning. (a) Record-level validation funnel: all $80{,}000$
+  training records satisfy the completeness checks. (b) Evidence-code
+  normalisation collapses $504$ raw, value-suffixed codes to $223$ canonical
+  base codes ($-56\%$), reducing sparsity before encoding.}
+  \label{fig:cleaning}
+\end{figure}
+
+\subsection{Data Transformation}
+Cleaned records are transformed into model-ready form. Raw evidence codes of the
+form \texttt{E\_54\_@\_V\_161} are normalised to canonical base codes
+(\texttt{E\_54}), which reduces the unique-code vocabulary from $504$ to $223$
+(Fig.~\ref{fig:cleaning}b) and removes value-suffix sparsity. Age is scaled to
+$[0,1]$, sex is mapped to a binary indicator, and the evidence set is encoded as
+binary flags. Each patient is expanded into a $T{=}8$-step diagnostic trajectory
+in which evidence is revealed sequentially, yielding a $64$-dimensional
+observation per step, a discrete evidence-acquisition action, and a
+$5$-dimensional outcome equal to the top-$k$ differential-diagnosis
+distribution.
+
+\subsection{Data Integration}
+The three sources are integrated into a single pipeline: DDXPlus trajectories
+train and evaluate the world model and ensemble; MedMCQA items are embedded and
+indexed (dense $+$ BM25) as the retrievable evidence corpus that supplies
+context labels and the Shapley attribution pool; and MedQA-USMLE queries drive
+the end-to-end comparison. A shared vocabulary of $49$ pathologies and $223$
+evidence base codes links the structured and textual modalities.
+
+\subsection{Data Reduction}
+The preprocessing pipeline (Fig.~\ref{fig:preprocess}) reduces high-cardinality,
+string-encoded records to compact tensors: cleaning removes format noise,
+transformation normalises and encodes, integration joins the sources, and
+reduction projects each patient onto a fixed $64$-dimensional observation space
+with a $5$-dimensional outcome. The result is a dense numerical representation
+small enough to train in minutes yet rich enough to preserve clinically
+meaningful structure.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\textwidth]{fig18_preprocess_pipeline}
+  \caption{Data preprocessing pipeline: cleaning, transformation, integration,
+  and reduction map raw clinical records to fixed-size tensors.}
+  \label{fig:preprocess}
+\end{figure}
+
+\subsection{Summary of Preprocessed Data}
+The preprocessed dataset exhibits two properties that shape evaluation. First,
+the pathology distribution is strongly long-tailed across $49$ classes
+(Fig.~\ref{fig:imbalance}a), and the true pathology is the top-ranked entry of
+the differential for the large majority of patients
+(Fig.~\ref{fig:imbalance}b); this explains why rank-based macro-F1 is a
+demanding metric. Second, the engineered $64$-dimensional observation space is
+informative: the age and sex dimensions are almost always active, evidence
+dimensions activate at clinically plausible rates, and the evidence
+co-occurrence structure forms coherent blocks (Fig.~\ref{fig:preprocessed}),
+indicating that the encoding preserves real symptom correlations rather than
+noise.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\textwidth]{fig15_class_imbalance}
+  \caption{Class structure of the preprocessed data. (a) Pathology frequency
+  across $49$ classes on a log scale, showing a long tail. (b) Distribution of
+  the true pathology's rank within the differential-diagnosis target.}
+  \label{fig:imbalance}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\textwidth]{fig16_preprocessed_summary}
+  \caption{Preprocessed feature space. (a) Activation frequency of each of the
+  $64$ observation dimensions (age and sex highlighted). (b) Pearson
+  co-occurrence among the eighteen most active evidence dimensions, showing
+  coherent clinical blocks.}
+  \label{fig:preprocessed}
+\end{figure}
+
+%==============================================================
+\chapter{Result Analysis}
+%==============================================================
+
+\section{Performance Evaluation}
+\label{sec:performance}
+We evaluate the world model and ensemble on the DDXPlus validation split using
+next-state mean absolute error (MAE) and RMSE, $1\sigma$ coverage, expected
+calibration error (ECE)~\cite{guo2017calibration}, top-rank diagnosis accuracy,
+and macro-F1. Table~\ref{tab:main} and Fig.~\ref{fig:metrics} summarise the
+results. The model predicts the next latent-decoded state with MAE $0.039$ and
+RMSE $0.074$, ranks the true pathology at the top of the differential with
+$0.755$ accuracy, and is well calibrated, with ECE $0.029$ and $1\sigma$
+coverage $0.80$. The macro-F1 of $0.17$ reflects the difficulty and class
+imbalance of fine-grained rank classification across $49$ pathologies
+(Section~\ref{sec:discussion}).
+
+\begin{table}[H]
+\caption{World-model and ensemble evaluation on the DDXPlus validation split.}
+\label{tab:main}
+\centering
+\small
+\begin{tabular}{lc}
+\toprule
+\textbf{Metric} & \textbf{Value}\\
+\midrule
+Next-state MAE        & $0.039$ \\
+Next-state RMSE       & $0.074$ \\
+Top-rank accuracy     & $0.755$ \\
+Macro-F1              & $0.172$ \\
+Expected calibration error (ECE) & $0.029$ \\
+$1\sigma$ coverage    & $0.801$ \\
+Mean $|\text{SHAP}|$  & $0.734$ \\
+\midrule
+Parameters            & $10{,}130{,}060$ \\
+Training time         & $<20$ min (1$\times$RTX 4080S) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.95\textwidth]{fig7_metrics_dashboard}
+  \caption{World-model evaluation metrics. Low error and calibration error
+  accompany competitive accuracy and well-behaved coverage.}
+  \label{fig:metrics}
+\end{figure}
+
+\paragraph{Generalisation (testing method).}
+To verify that the model does not overfit, we evaluate the trained checkpoints on
+a held-out split and compare against training-split performance
+(Fig.~\ref{fig:traintest}). Training and held-out errors are nearly identical
+(MAE $0.037$ vs.\ $0.039$; RMSE $0.070$ vs.\ $0.074$; error rate $0.232$ vs.\
+$0.245$), a gap below $0.002$ MAE, confirming strong generalisation. The
+training curves (Fig.~\ref{fig:traintest}a) show smooth convergence of the joint
+loss, the reconstruction term, and the newly supervised reward head.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\textwidth]{fig19_train_test}
+  \caption{Training and generalisation. (a) World-model training convergence
+  (total, reconstruction, and reward-head losses). (b) Train versus held-out
+  error: the small gap indicates the model generalises rather than memorises.}
+  \label{fig:traintest}
+\end{figure}
+
+\paragraph{Calibration and uncertainty (reliability).}
+Figure~\ref{fig:calibration} shows the reliability diagram: binned predicted
+uncertainty tracks empirical error along the diagonal, confirming that the
+ensemble's confidence is meaningful. The epistemic/aleatoric decomposition
+(Fig.~\ref{fig:uncertainty}) separates reducible model uncertainty from
+irreducible data noise---information the planner exploits through the
+$\gamma$-penalty and which the system reports as a context label.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.7\textwidth]{fig4_calibration}
+  \caption{Reliability diagram. Predicted uncertainty closely matches empirical
+  error, indicating good calibration (low ECE).}
+  \label{fig:calibration}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.74\textwidth]{fig5_uncertainty}
+  \caption{Epistemic versus aleatoric uncertainty over the validation set. The
+  spread shows the ensemble distinguishes model uncertainty from data noise.}
+  \label{fig:uncertainty}
+\end{figure}
+
+\paragraph{Latent structure.}
+The t-SNE projection of the learned latent states (Fig.~\ref{fig:latent})
+exhibits organisation by true diagnosis rank, indicating that the encoder and
+dynamics model capture clinically meaningful geometry rather than collapsing to a
+trivial embedding.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.72\textwidth]{fig6_latent_tsne}
+  \caption{t-SNE of latent states, coloured by the true diagnosis rank. The
+  emergent organisation reflects learned clinical structure.}
+  \label{fig:latent}
+\end{figure}
+
+\section{Analysis of Design Solutions}
+The design couples a mature retrieval stack with a compact world-model core. Its
+strengths are calibration (ECE $0.029$), generalisation (train/test gap $<0.002$
+MAE), efficiency ($10.1$M parameters, $<20$ min training), and native
+trustworthiness (context labels and source tracking in a single pass). Its
+principal weaknesses follow from the data: semi-synthetic trajectories make the
+transition target close to deterministic, and severe class imbalance depresses
+macro-F1. The feasibility and cost analysis (Sections~\ref{sec:economic}
+and~\ref{sec:performance}) favours the design: the small local core is cheap to
+train and run, and it lowers the marginal per-query cost relative to a
+cloud-LLM-only system while adding the trust mechanisms the baseline lacks.
+
+\section{Final Design Adjustments}
+Two adjustments were made in response to the performance evaluation. First, the
+reward head was changed from unsupervised to \emph{supervised} with the shaping
+target $r^\star_t=(\max_k y_k)\cdot t/T$, so that planning scores became
+meaningful rather than arbitrary; the reward loss then converges alongside
+reconstruction (Fig.~\ref{fig:traintest}a). Second, the planner's undirected
+random rollouts were replaced by a \emph{beam search} ($W{=}8$, $H{=}4$) that
+maximises the composite objective $J(\pi)$. Neither change alters the calibrated
+predictive metrics, which depend on the ensemble, but together they make the
+planning objective well defined.
+
+\section{Statistical Analysis}
+\label{sec:stat}
+To test whether the improvement over the baseline is significant rather than
+incidental, we apply the Wilcoxon signed-rank test to the paired per-vignette
+concept-coverage scores of the two systems across the ten clinical vignettes
+(Fig.~\ref{fig:stat}). The proposed framework improves coverage on every paired
+case (Fig.~\ref{fig:stat}a); the mean improvement is $+0.27$ with a $95\%$
+confidence interval of $\pm0.21$, and the signed-rank test rejects the null
+hypothesis of no difference at $p=0.046$ (Fig.~\ref{fig:stat}b). The effect is
+therefore statistically significant at the $5\%$ level despite the modest sample
+of vignettes.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\textwidth]{fig20_statistical}
+  \caption{Statistical analysis of the controlled comparison. (a) Paired
+  per-vignette concept-coverage scores (baseline vs.\ proposed). (b) Mean
+  improvement with a $95\%$ confidence interval and the Wilcoxon signed-rank
+  $p$-value.}
+  \label{fig:stat}
+\end{figure}
+
+\section{Comparisons and Relationships}
+We compare the framework against representative RAG families and against a
+strong measured baseline. Qualitatively (Fig.~\ref{fig:capability}), existing
+methods---Vanilla RAG~\cite{lewis2020rag}, HyDE~\cite{gao2023hyde},
+cross-encoder re-ranking RAG~\cite{nogueira2019passage}, and
+Self-RAG~\cite{asai2024selfrag}---cover retrieval and re-ranking but lack causal
+reasoning, world-model planning, calibrated uncertainty, per-document
+attribution, and treatment simulation, all of which the proposed framework
+provides in a single pipeline.
+
+Quantitatively, the control is a strong hybrid RAG system (dense MiniLM$+$FAISS
+and BM25 fused by RRF), answered directly by the same DeepSeek
+LLM~\cite{deepseek2024} used by our framework, but without the world model,
+ensemble, or attribution. Both systems answer an identical set of ten complex
+clinical vignettes over the same corpus. Table~\ref{tab:compare},
+Fig.~\ref{fig:comparison}, and Fig.~\ref{fig:quantcompare} summarise the study.
+The framework raises clinical concept coverage from $0.70$ to $0.97$ ($+38\%$),
+answer-structure completeness from $0.50$ to $0.84$ ($+68\%$), and evidence
+grounding from $2.0$ to $5.1$ citations per answer ($2.5\times$). Per-vignette
+results (Fig.~\ref{fig:perprompt}) show the gain is consistent across all ten
+cases. Notably, the framework reports \emph{lower but better-calibrated}
+confidence ($0.70$ vs.\ $0.91$): the baseline's near-constant high confidence is
+characteristic of overconfidence, whereas our framework tempers confidence in
+proportion to genuine uncertainty. Finally, the framework supplies a mean
+$|\text{SHAP}|$ attribution of $1.28$ for source tracking, calibrated
+uncertainty, and treatment-plan simulation---none of which the baseline
+provides.
+
+\begin{table}[H]
+\caption{Proposed framework versus hybrid-RAG baseline on ten clinical
+vignettes.}
+\label{tab:compare}
+\centering
+\small
+\begin{tabular}{lcc}
+\toprule
+\textbf{Metric} & \textbf{Baseline RAG} & \textbf{Proposed}\\
+\midrule
+Clinical concept coverage      & $0.70$ & $\mathbf{0.97}$\\
+Answer-structure completeness  & $0.50$ & $\mathbf{0.84}$\\
+Evidence citations (avg.)      & $2.0$  & $\mathbf{5.1}$\\
+Stated confidence              & $0.91$ & $0.70$ (calibrated)\\
+SHAP attribution (mean $|\phi|$)& ---   & $\mathbf{1.28}$\\
+Calibrated uncertainty         & No     & \textbf{Yes}\\
+Plan simulation                & No     & \textbf{Yes}\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\textwidth]{fig11_method_capability}
+  \caption{Capability comparison against representative RAG families. Existing
+  methods cover retrieval and re-ranking but lack causal reasoning, world-model
+  planning, calibrated uncertainty, per-document attribution, and treatment
+  simulation, all of which the proposed framework provides.}
+  \label{fig:capability}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.92\textwidth]{fig8_comparison}
+  \caption{Aggregate comparison on ten vignettes. The proposed framework
+  improves coverage, completeness, and grounding over the baseline; citation
+  counts are shown normalised by the top-$k$ budget.}
+  \label{fig:comparison}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.92\textwidth]{fig12_method_quantitative}
+  \caption{Head-to-head quantitative comparison against the strongest measured
+  baseline (hybrid dense$+$BM25 RAG) on the ten vignettes. The proposed
+  framework improves concept coverage, structure completeness, and evidence
+  grounding, and additionally provides calibrated confidence---a capability the
+  baseline lacks (shown as available$=1$/unavailable$=0$).}
+  \label{fig:quantcompare}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.92\textwidth]{fig9_perprompt}
+  \caption{Per-vignette clinical concept coverage. The proposed framework
+  matches or exceeds the baseline on every case.}
+  \label{fig:perprompt}
+\end{figure}
+
+\section{Multi-Method Comparison Against Advanced RAG}
+\label{sec:multirag}
+The head-to-head study above isolates the contribution of the world-model core
+against a single strong baseline. To situate the framework within the broader
+landscape of \emph{advanced} retrieval, we additionally run four progressively
+stronger RAG pipelines \emph{live} through the same DeepSeek
+LLM~\cite{deepseek2024}, over the same MedMCQA evidence corpus, on the same ten
+clinical vignettes, so that the only variable is the retrieval/reasoning stack:
+(M1)~vanilla dense RAG (MiniLM$+$FAISS); (M2)~hybrid dense$+$BM25 retrieval with
+reciprocal-rank fusion; (M3)~HyDE~\cite{gao2023hyde} hypothetical-document
+expansion over hybrid retrieval; and (M4)~cross-encoder
+re-ranking~\cite{nogueira2019passage} with maximal-marginal-relevance (MMR)
+diversification. Method~M5 is the full proposed framework.
+Table~\ref{tab:multirag} and Fig.~\ref{fig:multirag} report the measured study.
+
+\begin{table}[H]
+\caption{Live multi-method comparison of four advanced-RAG pipelines and the
+proposed framework on ten clinical vignettes (identical corpus, LLM, and scoring
+rubric; only the retrieval/reasoning stack varies). Higher is better except
+stated confidence, which the framework deliberately calibrates rather than
+maximises.}
+\label{tab:multirag}
+\centering
+\small
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Method} & \textbf{Concept} & \textbf{Structure} & \textbf{Citations} & \textbf{Conf.}\\
+\midrule
+M1\quad Vanilla dense RAG          & $0.80$ & $0.51$ & $2.3$ & $0.86$\\
+M2\quad Hybrid (dense$+$BM25)      & $0.73$ & $0.53$ & $1.6$ & $0.84$\\
+M3\quad HyDE $+$ hybrid            & $0.87$ & $0.50$ & $2.5$ & $0.83$\\
+M4\quad Cross-encoder $+$ MMR      & $0.77$ & $0.51$ & $1.5$ & $0.91$\\
+\midrule
+\textbf{M5\quad Proposed (ours)}   & $\mathbf{0.97}$ & $\mathbf{0.84}$ & $\mathbf{5.1}$ & $0.70$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\textwidth]{fig24_multi_method}
+  \caption{Advanced-RAG methods versus the proposed framework on the ten
+  vignettes (identical corpus and LLM). Left: answer quality (concept coverage,
+  structure completeness, and evidence grounding normalised by the top-$k$
+  budget). Right: end-to-end latency---HyDE and cross-encoder$+$MMR add an extra
+  LLM call and a re-ranking pass without closing the quality gap.}
+  \label{fig:multirag}
+\end{figure}
+
+Two findings stand out. First, stronger \emph{retrieval} alone yields only
+incremental and non-monotonic gains: HyDE attains the best retrieval-only
+concept coverage ($0.87$), yet hybrid fusion and MMR re-ranking do not uniformly
+help on these complex vignettes---hybrid even trails vanilla dense retrieval on
+coverage ($0.73$ vs.\ $0.80$)---and every retrieval-only variant plateaus near
+$0.50$ on answer-structure completeness. Second, the largest and most
+\emph{trust-relevant} improvements come from the reasoning stack layered on top
+of retrieval: the framework lifts concept coverage to $0.97$ ($+10$ points over
+the strongest baseline, HyDE), nearly doubles structural completeness to $0.84$,
+and roughly doubles evidence grounding to $5.1$ citations per answer. The
+advanced retrieval methods also incur higher latency (HyDE and
+cross-encoder$+$MMR add $4$--$5$\,s per query for the extra LLM call and
+re-ranking pass; Fig.~\ref{fig:multirag}, right) without closing the quality
+gap. Crucially, none of M1--M4 provides calibrated uncertainty, per-document
+SHAP attribution, or treatment-plan simulation, all of which the framework
+supplies in the same pass.
+
+\section{Worked Answer Comparisons}
+\label{sec:demo}
+To make the quantitative gains concrete, we show the actual model outputs on
+three representative vignettes, with the measured per-answer scores. Excerpts are
+trimmed for length (``\ldots'') but otherwise verbatim.
+
+\paragraph{Vignette P1 --- Acute coronary syndrome.}
+\emph{58-year-old male with hypertension and diabetes; acute chest pain
+radiating to the left arm and jaw; ST-elevation in leads II, III, aVF; troponin
+$2.5$\,ng/mL; pain for $45$ minutes.}
+
+\noindent
+\begin{minipage}[t]{0.47\textwidth}
+\footnotesize
+\textbf{Baseline RAG}\\{\scriptsize coverage $0.67$, $2$ citations, conf.\ $0.95$}\\[3pt]
+``Most likely diagnosis: inferior-wall STEMI. Immediate management: emergency
+reperfusion therapy (primary PCI or thrombolysis) [2][3].''
+\end{minipage}\hfill
+\begin{minipage}[t]{0.47\textwidth}
+\footnotesize
+\textbf{GRAPES-SHAP (ours)}\\{\scriptsize coverage $1.00$, $4$ citations, conf.\ $0.70$}\\[3pt]
+Structured reasoning: confirms inferior-wall STEMI [2]; prioritises reperfusion
+and explicitly weighs \textbf{PCI vs.\ thrombolysis} (PCI preferred --- lower
+intracranial-haemorrhage risk); treatment choice informed by plan simulation
+(score $-0.29$); adds the supportive-care bundle (aspirin, P2Y12 inhibitor,
+heparin). Reports calibrated confidence $0.70$ and mean$|\text{SHAP}|=1.08$.
+\end{minipage}
+
+\smallskip
+\noindent\textit{Takeaway:} both reach the correct top-line diagnosis, but only
+the framework supplies the PCI-versus-thrombolysis rationale, the full
+supportive-care bundle, calibrated confidence, and per-evidence attribution.
+
+\paragraph{Vignette P2 --- Septic shock.}
+\emph{72-year-old with COPD; fever, altered mental status, HR $118$, lactate
+$3.2$\,mmol/L, BP $88/52$, pneumonia on imaging, cultures pending.}
+
+\noindent
+\begin{minipage}[t]{0.47\textwidth}
+\footnotesize
+\textbf{Baseline RAG}\\{\scriptsize coverage $0.33$, $1$ citation, conf.\ $0.90$}\\[3pt]
+``Septic shock secondary to pneumonia; aggressive fluid resuscitation, oxygen,
+and norepinephrine for hypotension if fluids fail [3].''
+\end{minipage}\hfill
+\begin{minipage}[t]{0.47\textwidth}
+\footnotesize
+\textbf{GRAPES-SHAP (ours)}\\{\scriptsize coverage $1.00$, $6$ citations, conf.\ $0.70$}\\[3pt]
+Structured plan around the three pillars --- source control, \textbf{early
+broad-spectrum antibiotics} after cultures, and haemodynamic support;
+reconciles the retrieved ``dopamine-first'' text against modern
+norepinephrine-first practice; grounds each step ($6$ citations).
+\end{minipage}
+
+\smallskip
+\noindent\textit{Takeaway:} the baseline omits early broad-spectrum antibiotics
+--- arguably the single most outcome-critical step --- which the framework
+recovers while flagging the evidence-versus-guideline discrepancy.
+
+\paragraph{Vignette P4 --- Acute ischaemic stroke.}
+\emph{65-year-old with atrial fibrillation (not anticoagulated); acute aphasia
+and right-sided weakness; last known normal $1.5$\,h ago; NIHSS $14$; CT shows
+no haemorrhage.}
+
+\noindent
+\begin{minipage}[t]{0.47\textwidth}
+\footnotesize
+\textbf{Baseline RAG}\\{\scriptsize coverage $0.33$, $2$ citations, conf.\ $0.95$}\\[3pt]
+``Acute ischaemic stroke (left MCA); administer IV thrombolysis (alteplase)
+within $4.5$\,h of onset [2][3].''
+\end{minipage}\hfill
+\begin{minipage}[t]{0.47\textwidth}
+\footnotesize
+\textbf{GRAPES-SHAP (ours)}\\{\scriptsize coverage $1.00$, $4$ citations, conf.\ $0.70$}\\[3pt]
+Traces localisation $\rightarrow$ cardioembolic AF aetiology $\rightarrow$
+eligibility (within window, no contraindication), then selects IV thrombolysis
+(alteplase/tenecteplase); mean$|\text{SHAP}|=1.36$ ranks the time-window and
+no-haemorrhage evidence as decisive.
+\end{minipage}
+
+\smallskip
+\noindent\textit{Takeaway:} both reach tPA, but only the framework exposes the
+localisation$\rightarrow$aetiology$\rightarrow$eligibility chain and the
+evidence weights behind the time-critical decision.
+
+\section{Discussions}
+\label{sec:discussion}
+The results show that inserting an explicit, calibrated, and interpretable world
+model between retrieval and generation---and surfacing its state as context
+labels and source attributions---yields measurable, statistically significant
+gains in grounding and answer quality at a small parameter and compute budget.
+We nonetheless delineate the method's scope precisely, as responsible
+clinical-AI reporting demands.
+
+\textbf{Semi-synthetic trajectories.} DDXPlus is a static diagnostic dataset;
+the preprocessor constructs trajectories by revealing evidence sequentially. The
+transition target is therefore close to deterministic, and the low MAE should be
+read as faithful modelling of this constructed dynamics, not of real
+physiological time series.
+
+\textbf{Action semantics.} In training, actions correspond to \emph{evidence
+acquisition} rather than physical interventions. The planner is thus best
+understood as an evidence-gathering / diagnostic-refinement policy; mapping it
+onto treatment actions would require a dataset with logged interventions and
+outcomes.
+
+\textbf{Outcome interpretation.} The supervised outcomes are
+differential-diagnosis probabilities. Narrating them as survival or readmission
+would over-claim; we therefore report them as diagnostic confidence.
+
+\textbf{Knowledge graph.} The graph encodes a stochastic causal \emph{prior}
+rather than a curated ontology; substituting a literature-derived graph (e.g.,
+SNOMED-CT relations) is a natural extension.
+
+\textbf{Macro-F1.} The modest macro-F1 stems from fine-grained, imbalanced rank
+classification (Fig.~\ref{fig:imbalance}) and the use of $\arg\max$ over a soft
+distribution; it does not contradict the strong calibration and coverage
+results, which are the quantities of interest for trustworthy decision support.
+
+%==============================================================
+\chapter{Conclusion}
+%==============================================================
+
+\section{Summary of Findings}
+This thesis presented a framework that makes clinical question answering more
+trustworthy through context labelling and original-source tracking, supported by
+an action-conditioned latent world model, a calibrated deep ensemble, and
+Shapley-value attribution in a compact $10.1$M-parameter model. The world model
+is accurate (MAE $0.039$), well calibrated (ECE $0.029$), and generalises (train/test
+gap $<0.002$ MAE). The full system significantly improves concept coverage,
+completeness, and evidence grounding over a strong RAG baseline (Wilcoxon
+$p=0.046$) while adding calibrated uncertainty and per-document source tracking
+that the baseline lacks.
+
+\section{Contributions to the Field}
+The contributions are: (i) a trust-oriented reframing of RAG around context
+labelling and original-source tracking; (ii) a compact world-model core with
+supervised reward shaping and beam-search planning that adds prospective
+reasoning to retrieval; (iii) native calibrated uncertainty with an
+epistemic/aleatoric decomposition; (iv) Shapley-value source tracking that
+attributes answers to individual documents; and (v) an honest, reproducible
+characterisation of scope, with all code, configurations, and figure scripts
+released.
+
+\section{Recommendations for Future Work}
+\label{sec:future}
+The limitations define concrete next steps. Replacing the semi-synthetic
+dynamics with logged intervention--outcome data (e.g., intensive-care records)
+would enable true treatment planning. Substituting the stochastic causal prior
+with a curated medical ontology (e.g., SNOMED-CT) would strengthen the graph
+reasoning. Addressing class imbalance with re-weighting or focal objectives
+would raise macro-F1 without sacrificing calibration. Finally, a prospective
+clinician-in-the-loop study would test whether context labels and source
+tracking measurably reduce automation bias in practice.
+
+%==============================================================
+% REPRODUCIBILITY
+%==============================================================
+\chapter*{Reproducibility}
+\addcontentsline{toc}{chapter}{Reproducibility}
+All code, configurations, trained-model metrics, and the scripts that generate
+every figure and table in this thesis are released with the project. The
+end-to-end retraining and evaluation are reproduced by
+\texttt{scripts/retrain\_and\_eval.py}; the data statistics, exploratory
+figures, and train/test analysis by \texttt{scripts/make\_paper\_assets.py}.
+The comparison against the baseline reuses a single recorded LLM run and does not
+require re-querying the external API.
+
+%==============================================================
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}

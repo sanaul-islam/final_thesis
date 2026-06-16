@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GRAPES-SHAP — Datasets &amp; World Model Explained</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2333; --line:#2d3748;
+    --ink:#e6edf3; --muted:#9aa7b8; --accent:#58a6ff; --accent2:#7ee787;
+    --warn:#f0883e; --pink:#ff7b9c; --purple:#bc8cff; --cyan:#56d4dd;
+    --radius:14px; --shadow:0 8px 30px rgba(0,0,0,.35);
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:radial-gradient(1200px 600px at 80% -10%,#1b2740 0,var(--bg) 55%);
+    color:var(--ink); font:15px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  a{color:var(--accent);text-decoration:none}
+  .wrap{max-width:1180px;margin:0 auto;padding:0 22px 90px}
+
+  /* HEADER */
+  header{padding:54px 22px 30px;text-align:center}
+  header h1{font-size:clamp(26px,4vw,42px);margin:0 0 8px;letter-spacing:-.5px}
+  header h1 span{background:linear-gradient(90deg,var(--accent),var(--accent2));-webkit-background-clip:text;background-clip:text;color:transparent}
+  header p{color:var(--muted);max-width:760px;margin:6px auto 0;font-size:16px}
+  .pills{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:18px}
+  .pill{background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:6px 14px;font-size:12.5px;color:var(--muted)}
+  .pill b{color:var(--accent2)}
+
+  /* NAV */
+  nav{position:sticky;top:0;z-index:40;background:rgba(13,17,23,.82);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+  nav .navin{max-width:1180px;margin:0 auto;display:flex;gap:6px;overflow-x:auto;padding:10px 18px}
+  nav button{white-space:nowrap;background:transparent;border:1px solid transparent;color:var(--muted);
+    padding:8px 14px;border-radius:9px;cursor:pointer;font-size:13.5px;transition:.18s}
+  nav button:hover{color:var(--ink);background:var(--panel)}
+  nav button.active{color:#06121f;background:linear-gradient(90deg,var(--accent),var(--cyan));font-weight:700;border-color:transparent}
+
+  section{margin-top:46px;scroll-margin-top:70px}
+  h2{font-size:24px;margin:0 0 6px;display:flex;align-items:center;gap:11px}
+  h2 .ix{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;font-size:15px;
+    background:var(--panel2);border:1px solid var(--line);color:var(--accent)}
+  .lead{color:var(--muted);margin:0 0 20px;max-width:840px}
+
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:22px;box-shadow:var(--shadow)}
+  .grid{display:grid;gap:18px}
+  .g3{grid-template-columns:repeat(3,1fr)}
+  .g2{grid-template-columns:repeat(2,1fr)}
+  @media(max-width:880px){.g3,.g2{grid-template-columns:1fr}}
+
+  .ds-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}
+  .ds-head h3{margin:0;font-size:18px}
+  .tag{font-size:11px;padding:3px 9px;border-radius:6px;font-weight:700}
+  .t-train{background:rgba(126,231,135,.14);color:var(--accent2)}
+  .t-corpus{background:rgba(86,212,221,.14);color:var(--cyan)}
+  .t-eval{background:rgba(188,140,255,.16);color:var(--purple)}
+  .kv{display:flex;justify-content:space-between;border-bottom:1px dashed var(--line);padding:7px 0;font-size:13.5px}
+  .kv:last-child{border-bottom:0}
+  .kv span:first-child{color:var(--muted)}
+  .kv b{color:var(--ink)}
+
+  pre{background:#0a0e14;border:1px solid var(--line);border-radius:10px;padding:14px;overflow:auto;
+    font:12.5px/1.55 "SF Mono",Consolas,Monaco,monospace;color:#c9d6e4;margin:12px 0 0}
+  .c-key{color:var(--pink)} .c-str{color:var(--accent2)} .c-num{color:var(--warn)} .c-cmt{color:#5b6b7e}
+
+  .note{border-left:3px solid var(--warn);background:rgba(240,136,62,.08);padding:12px 16px;border-radius:0 10px 10px 0;margin-top:16px;font-size:13.5px;color:#f0d9c4}
+  .note b{color:var(--warn)}
+  .ok{border-left:3px solid var(--accent2);background:rgba(126,231,135,.07);padding:12px 16px;border-radius:0 10px 10px 0;margin-top:16px;font-size:13.5px;color:#cfeccf}
+
+  /* PIPELINE */
+  .flow{display:flex;align-items:stretch;gap:0;flex-wrap:wrap;margin-top:10px}
+  .stage{flex:1;min-width:150px;background:var(--panel2);border:1px solid var(--line);border-radius:12px;
+    padding:14px;text-align:center;position:relative;cursor:pointer;transition:.18s}
+  .stage:hover{transform:translateY(-4px);border-color:var(--accent)}
+  .stage .em{font-size:24px}
+  .stage h4{margin:6px 0 3px;font-size:13.5px}
+  .stage small{color:var(--muted);font-size:11px;display:block}
+  .arrow{display:grid;place-items:center;color:var(--accent);font-size:22px;padding:0 4px;min-width:26px}
+  @media(max-width:880px){.arrow{transform:rotate(90deg)}}
+
+  /* LAYER TABLE */
+  .layer{display:grid;grid-template-columns:46px 1.2fr 1.4fr 1fr;gap:0;align-items:center;
+    border:1px solid var(--line);border-top:0;padding:12px 14px;font-size:13.5px}
+  .layer:first-of-type{border-top:1px solid var(--line);border-radius:10px 10px 0 0}
+  .layer:last-of-type{border-radius:0 0 10px 10px}
+  .layer:hover{background:var(--panel2)}
+  .layer .num{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;font-weight:700;
+    background:linear-gradient(135deg,var(--accent),var(--purple));color:#06121f}
+  .layer b{color:var(--ink)} .layer .mono{font-family:"SF Mono",Consolas,monospace;font-size:12px;color:var(--cyan)}
+  .layer .role{color:var(--muted)}
+  .lh{grid-template-columns:46px 1.2fr 1.4fr 1fr;background:var(--panel2);font-weight:700;color:var(--accent);font-size:12px;text-transform:uppercase;letter-spacing:.4px}
+  @media(max-width:880px){.layer,.lh{grid-template-columns:38px 1fr;row-gap:4px}.layer .role,.lh span:nth-child(3),.lh span:nth-child(4){grid-column:2}}
+
+  /* tensor flow viz */
+  .tensor{display:flex;align-items:center;gap:0;flex-wrap:wrap;justify-content:center;margin-top:6px}
+  .box{border-radius:10px;padding:12px 14px;text-align:center;min-width:96px;border:1px solid var(--line)}
+  .box .shape{font-family:monospace;font-size:12px;color:var(--warn)}
+  .box .lab{font-size:11.5px;color:var(--muted);margin-top:2px}
+  .b-in{background:rgba(88,166,255,.10)} .b-mid{background:rgba(188,140,255,.10)} .b-out{background:rgba(126,231,135,.10)}
+
+  /* metrics */
+  .metric{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:16px;text-align:center}
+  .metric .val{font-size:30px;font-weight:800;background:linear-gradient(90deg,var(--accent2),var(--cyan));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .metric .lab{color:var(--muted);font-size:12.5px;margin-top:3px}
+  .metric .sub{font-size:11px;color:#62718a;margin-top:2px}
+
+  .bars{margin-top:8px}
+  .bar-row{display:grid;grid-template-columns:190px 1fr 96px;align-items:center;gap:12px;margin:11px 0}
+  .bar-row .nm{font-size:13px;color:var(--muted)}
+  .track{background:#0a0e14;border-radius:8px;height:22px;overflow:hidden;border:1px solid var(--line);position:relative}
+  .fill{height:100%;border-radius:8px 0 0 8px;width:0;transition:width 1.1s cubic-bezier(.2,.8,.2,1)}
+  .f-base{background:linear-gradient(90deg,#3a4a63,#586d8f)}
+  .f-grp{background:linear-gradient(90deg,var(--accent),var(--accent2))}
+  .bar-row .vv{font-family:monospace;font-size:13px;text-align:right}
+  .lgnd{display:flex;gap:18px;justify-content:flex-end;font-size:12px;color:var(--muted);margin-top:4px}
+  .dot{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:middle}
+
+  details{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:0 16px;margin-top:12px}
+  summary{cursor:pointer;padding:13px 0;font-weight:600;list-style:none}
+  summary::-webkit-details-marker{display:none}
+  summary::before{content:"▸";color:var(--accent);margin-right:9px;display:inline-block;transition:.2s}
+  details[open] summary::before{transform:rotate(90deg)}
+  details .body{padding:0 0 16px;color:var(--muted);font-size:13.5px}
+
+  footer{margin-top:60px;text-align:center;color:#5b6b7e;font-size:12.5px;border-top:1px solid var(--line);padding-top:24px}
+  .tt{display:inline-block;border-bottom:1px dotted var(--muted);cursor:help}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>GRAPES-SHAP — <span>Datasets &amp; the World Model</span>, Explained</h1>
+  <p>A visual, plain-language walkthrough of every dataset, exactly what the data looks like, and how the latent world model turns a patient into a prediction — layer by layer, from input to output.</p>
+  <div class="pills">
+    <span class="pill">📊 <b>100,000</b> samples</span>
+    <span class="pill">🧠 <b>10.1M</b> parameters</span>
+    <span class="pill">⏱️ <b>18.8 min</b> training</span>
+    <span class="pill">🎯 Accuracy <b>0.755</b></span>
+    <span class="pill">🔬 ECE <b>0.030</b></span>
+  </div>
+</header>
+
+<nav><div class="navin" id="nav">
+  <button data-t="datasets" class="active">📚 Datasets</button>
+  <button data-t="look">🔍 What Data Looks Like</button>
+  <button data-t="pipeline">🔗 Full Pipeline</button>
+  <button data-t="worldmodel">🧠 World Model Layers</button>
+  <button data-t="flow">🌊 Input → Output Flow</button>
+  <button data-t="results">📈 Key Results</button>
+  <button data-t="honest">⚖️ Scope &amp; Honesty</button>
+</div></nav>
+
+<div class="wrap">
+
+<!-- ============ DATASETS ============ -->
+<section id="datasets">
+  <h2><span class="ix">1</span> The Three Datasets</h2>
+  <p class="lead">GRAPES-SHAP learns from and is tested on three public medical datasets. Each plays a different role: one <b>teaches</b> the world model, one is the <b>evidence library</b> for retrieval, and one is the <b>exam</b> used to evaluate the final system.</p>
+  <div class="grid g3">
+    <div class="card">
+      <div class="ds-head"><h3>DDXPlus</h3><span class="tag t-train">TRAINS THE MODEL</span></div>
+      <p style="color:var(--muted);font-size:13.5px;margin:0 0 10px">Synthetic patients with symptoms (“evidences”), a true disease (pathology), and a ranked list of likely diagnoses. Used to train the encoder, GNN, world model &amp; ensemble.</p>
+      <div class="kv"><span>Train</span><b>80,000</b></div>
+      <div class="kv"><span>Validation</span><b>10,000</b></div>
+      <div class="kv"><span>Test</span><b>10,000</b></div>
+      <div class="kv"><span>Contains</span><b>Age, sex, symptoms, diagnosis</b></div>
+    </div>
+    <div class="card">
+      <div class="ds-head"><h3>MedMCQA</h3><span class="tag t-corpus">EVIDENCE CORPUS</span></div>
+      <p style="color:var(--muted);font-size:13.5px;margin:0 0 10px">Medical multiple-choice questions with correct answers + explanations. Turned into searchable documents that the retriever pulls evidence from.</p>
+      <div class="kv"><span>Documents</span><b>50,000</b></div>
+      <div class="kv"><span>Each doc</span><b>Q + answer + explanation</b></div>
+      <div class="kv"><span>Used by</span><b>Dense + BM25 retrieval</b></div>
+      <div class="kv"><span>Role</span><b>Knowledge base</b></div>
+    </div>
+    <div class="card">
+      <div class="ds-head"><h3>MedQA (USMLE)</h3><span class="tag t-eval">THE EXAM</span></div>
+      <p style="color:var(--muted);font-size:13.5px;margin:0 0 10px">Real US medical-licensing exam vignettes. Used as held-out clinical questions to benchmark the complete pipeline.</p>
+      <div class="kv"><span>Queries</span><b>1,000</b></div>
+      <div class="kv"><span>Style</span><b>Clinical vignettes</b></div>
+      <div class="kv"><span>Has</span><b>Question + options + answer</b></div>
+      <div class="kv"><span>Role</span><b>Evaluation only</b></div>
+    </div>
+  </div>
+  <div class="ok">✅ <b>Total: 100,000 samples.</b> DDXPlus → builds the brain · MedMCQA → fills the library · MedQA → grades the exam.</div>
+</section>
+
+<!-- ============ WHAT DATA LOOKS LIKE ============ -->
+<section id="look">
+  <h2><span class="ix">2</span> What Does the Data Actually Look Like?</h2>
+  <p class="lead">Click each card to see a real-shaped example of the raw record and how the preprocessor converts it into numbers the model can read.</p>
+
+  <div class="grid g2">
+    <div class="card">
+      <h3 style="margin:0 0 6px">🧬 DDXPlus — raw record</h3>
+      <pre><span class="c-key">AGE</span>: <span class="c-num">58</span>,  <span class="c-key">SEX</span>: <span class="c-str">"M"</span>
+<span class="c-key">PATHOLOGY</span>: <span class="c-str">"Myocardial Infarction"</span>
+<span class="c-key">INITIAL_EVIDENCE</span>: <span class="c-str">"E_55"</span>   <span class="c-cmt"># chest pain</span>
+<span class="c-key">EVIDENCES</span>: [<span class="c-str">"E_55"</span>,<span class="c-str">"E_54_@_V_161"</span>,<span class="c-str">"E_77"</span>...]
+<span class="c-key">DIFFERENTIAL_DIAGNOSIS</span>:
+   [[<span class="c-str">"MI"</span>, <span class="c-num">0.62</span>], [<span class="c-str">"Angina"</span>, <span class="c-num">0.21</span>],
+    [<span class="c-str">"GERD"</span>, <span class="c-num">0.10</span>], [<span class="c-str">"PE"</span>, <span class="c-num">0.07</span>]]</pre>
+      <div class="note">➡️ Becomes a <b>trajectory</b>: symptoms are revealed one step at a time so the model sees the patient “unfold,” not all at once.</div>
+    </div>
+    <div class="card">
+      <h3 style="margin:0 0 6px">🔢 After preprocessing → tensors</h3>
+      <pre><span class="c-cmt"># one patient becomes:</span>
+<span class="c-key">obs</span>      : shape <span class="c-num">(8, 64)</span>  <span class="c-cmt"># 8 timesteps × 64 features</span>
+<span class="c-key">actions</span>  : shape <span class="c-num">(8,)</span>     <span class="c-cmt"># which evidence revealed</span>
+<span class="c-key">next_obs</span> : shape <span class="c-num">(8, 64)</span>  <span class="c-cmt"># the next state (target)</span>
+<span class="c-key">outcomes</span> : shape <span class="c-num">(5,)</span>     <span class="c-cmt"># diagnosis probabilities</span>
+
+<span class="c-cmt"># feature layout inside the 64:</span>
+obs[<span class="c-num">0</span>] = age/100   obs[<span class="c-num">1</span>] = sex
+obs[<span class="c-num">2..63</span>] = symptom on/off flags (0 or 1)</pre>
+      <div class="ok">Outcomes (the training target) are the <b>real differential-diagnosis probabilities</b> from DDXPlus.</div>
+    </div>
+  </div>
+
+  <div class="grid g2" style="margin-top:18px">
+    <div class="card">
+      <h3 style="margin:0 0 6px">📖 MedMCQA — becomes a document</h3>
+      <pre><span class="c-cmt"># raw fields: question, opa-opd, cop, exp</span>
+<span class="c-key">document</span> = <span class="c-str">"[Cardiology] Q: Which artery is
+  affected in inferior MI? A: Right coronary
+  artery. The RCA supplies the inferior wall,
+  hence ST elevation in II, III, aVF..."</span></pre>
+      <div class="note">Each Q&amp;A → one searchable paragraph. 50,000 of these form the retrieval library.</div>
+    </div>
+    <div class="card">
+      <h3 style="margin:0 0 6px">🎓 MedQA — becomes an eval query</h3>
+      <pre><span class="c-key">question</span>: <span class="c-str">"A 58-y/o man with chest pain
+  radiating to jaw, ST elevation in II,III,aVF.
+  Most likely diagnosis?"</span>
+<span class="c-key">options</span> : {A: STEMI, B: GERD, C: PE, D: Angina}
+<span class="c-key">answer</span>  : <span class="c-str">"A"</span></pre>
+      <div class="ok">Used to test the final answer — never seen during training.</div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ PIPELINE ============ -->
+<section id="pipeline">
+  <h2><span class="ix">3</span> The Full Pipeline (Bird's-Eye View)</h2>
+  <p class="lead">A question flows through 6 big stages. The <b>world model</b> sits in the middle — it’s the “imagination” engine that simulates what happens next. Hover any stage.</p>
+  <div class="card">
+    <div class="flow">
+      <div class="stage" title="HyDE expands the query, then dense (MiniLM+FAISS) and BM25 search retrieve evidence, merged by RRF and re-ranked by a cross-encoder + MMR.">
+        <div class="em">🔎</div><h4>1. Retrieve</h4><small>find evidence</small>
+      </div>
+      <div class="arrow">→</div>
+      <div class="stage" title="The patient/question is embedded into a 256-d latent vector by the Encoder, conditioned on the causal Knowledge-Graph GNN.">
+        <div class="em">🧩</div><h4>2. Encode</h4><small>→ latent z</small>
+      </div>
+      <div class="arrow">→</div>
+      <div class="stage" style="border-color:var(--accent)" title="THE WORLD MODEL: action-conditioned GRU rolls the latent state forward in 'imagination' to simulate future states.">
+        <div class="em">🧠</div><h4>3. World Model</h4><small>imagine futures</small>
+      </div>
+      <div class="arrow">→</div>
+      <div class="stage" title="Tree-of-Thought planner rolls out candidate action sequences and scores them with the ensemble's value + uncertainty.">
+        <div class="em">🌳</div><h4>4. Plan</h4><small>pick best path</small>
+      </div>
+      <div class="arrow">→</div>
+      <div class="stage" title="5-member deep ensemble predicts outcomes with calibrated uncertainty (epistemic + aleatoric).">
+        <div class="em">🎲</div><h4>5. Predict</h4><small>+ uncertainty</small>
+      </div>
+      <div class="arrow">→</div>
+      <div class="stage" title="SHAP attributes importance to each evidence; DeepSeek LLM writes the final grounded answer; hallucination self-check verifies it.">
+        <div class="em">✍️</div><h4>6. Explain</h4><small>SHAP + LLM</small>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ WORLD MODEL LAYERS ============ -->
+<section id="worldmodel">
+  <h2><span class="ix">4</span> Inside the World Model — Every Layer's Job</h2>
+  <p class="lead">A <b>world model</b> learns the “rules of the world”: given the current state and an action, what is the next state? Here is exactly which layer does which job, in order.</p>
+
+  <div class="card" style="padding:0;overflow:hidden">
+    <div class="layer lh"><span>#</span><span>Layer (code)</span><span>What it does</span><span>Shape</span></div>
+
+    <div class="layer">
+      <span class="num">1</span>
+      <span><b>CausalResidual</b><br><span class="mono">a_emb + MLP + gate</span></span>
+      <span class="role">Computes a small “nudge” δ to the state caused by the action, gated &amp; scaled (×0.1). This is the <b>causal effect</b> of doing something.</span>
+      <span class="mono">z → Δz (256)</span>
+    </div>
+    <div class="layer">
+      <span class="num">2</span>
+      <span><b>Action Embedding</b><br><span class="mono">nn.Embedding(50,256)</span></span>
+      <span class="role">Turns the discrete action ID (one of 50) into a 256-d vector the network can use.</span>
+      <span class="mono">a → (256)</span>
+    </div>
+    <div class="layer">
+      <span class="num">3</span>
+      <span><b>GRU Core</b><br><span class="mono">GRU(512→512, ×3)</span></span>
+      <span class="role">The <b>heart of the world model</b>. A 3-layer recurrent net carries memory across time and produces the next hidden state from (state+δ, action).</span>
+      <span class="mono">(512)→h(512)</span>
+    </div>
+    <div class="layer">
+      <span class="num">4</span>
+      <span><b>h2z Projection</b><br><span class="mono">Linear+LayerNorm+SiLU</span></span>
+      <span class="role">Maps the GRU hidden state back into the 256-d <b>latent state space</b> z<sub>t+1</sub> — the predicted next state.</span>
+      <span class="mono">h→z' (256)</span>
+    </div>
+    <div class="layer">
+      <span class="num">5</span>
+      <span><b>Decoder</b><br><span class="mono">MLP 256→256→64</span></span>
+      <span class="role">Translates the abstract latent state back into a <b>readable observation</b> (the 64 patient features) — lets us check the model “understood” the world.</span>
+      <span class="mono">z→obs (64)</span>
+    </div>
+    <div class="layer">
+      <span class="num">6</span>
+      <span><b>Sigma Head</b><br><span class="mono">MLP + Softplus</span></span>
+      <span class="role">Outputs <b>uncertainty</b> (σ) for every latent dimension — how unsure the model is about its own prediction.</span>
+      <span class="mono">z→σ (256)</span>
+    </div>
+    <div class="layer">
+      <span class="num">7</span>
+      <span><b>Reward Head</b><br><span class="mono">MLP 512→128→1</span></span>
+      <span class="role">Scores “how good” a transition was — used by the planner to compare action paths.</span>
+      <span class="mono">(z,z')→r (1)</span>
+    </div>
+  </div>
+
+  <div class="grid g2" style="margin-top:18px">
+    <details open>
+      <summary>🔄 How <code>rollout()</code> imagines the future</summary>
+      <div class="body">Starting from the current latent state z₀, the model applies an action, predicts z₁, then feeds z₁ back in with the next action to predict z₂, and so on — <b>without ever seeing real observations</b>. This “dreaming” is what makes it a true world model: it can simulate consequences purely in its head.</div>
+    </details>
+    <details>
+      <summary>🎯 What the model is trained to minimise</summary>
+      <div class="body">Loss = <b>reconstruction</b> (predicted next state vs real next state) + a tiny <b>smoothness</b> term (states shouldn’t jump wildly) + a tiny <b>σ</b> term. In numbers: <code>recon + 0.01·smooth + 0.001·σ</code>. Low reconstruction error (MAE 0.040) means it predicts the next state very accurately.</div>
+    </details>
+  </div>
+</section>
+
+<!-- ============ FLOW ============ -->
+<section id="flow">
+  <h2><span class="ix">5</span> Input → Middle → Output, In Depth</h2>
+  <p class="lead">Follow one patient as their data becomes tensors, flows through the world model, and emerges as a prediction with uncertainty. Press the button to animate the tensor shapes.</p>
+
+  <div class="card">
+    <div style="text-align:center;margin-bottom:14px">
+      <button id="animBtn" style="background:linear-gradient(90deg,var(--accent),var(--cyan));border:0;color:#06121f;font-weight:700;padding:10px 20px;border-radius:10px;cursor:pointer;font-size:14px">▶ Animate the data flow</button>
+    </div>
+
+    <div class="tensor" id="tflow">
+      <div class="box b-in"><div class="shape">(8, 64)</div><div class="lab">INPUT<br>patient trajectory</div></div>
+      <div class="arrow">→</div>
+      <div class="box b-in"><div class="shape">(8, 256)</div><div class="lab">Encoder<br>→ latent z</div></div>
+      <div class="arrow">→</div>
+      <div class="box b-mid"><div class="shape">+Δz</div><div class="lab">CausalResidual<br>action effect</div></div>
+      <div class="arrow">→</div>
+      <div class="box b-mid"><div class="shape">(512)</div><div class="lab">GRU core<br>memory</div></div>
+      <div class="arrow">→</div>
+      <div class="box b-mid"><div class="shape">(8, 256)</div><div class="lab">next states<br>z′ predicted</div></div>
+      <div class="arrow">→</div>
+      <div class="box b-out"><div class="shape">(8, 64)</div><div class="lab">Decoder<br>readable obs</div></div>
+      <div class="arrow">→</div>
+      <div class="box b-out"><div class="shape">(5,)</div><div class="lab">Ensemble<br>diagnosis + σ</div></div>
+    </div>
+
+    <div class="grid g3" style="margin-top:22px">
+      <div class="card" style="background:var(--panel2)">
+        <h4 style="margin:0 0 6px;color:var(--accent)">🟦 INPUT stage</h4>
+        <p style="color:var(--muted);font-size:13px;margin:0">The patient’s 8-step symptom trajectory (8×64) plus the action taken at each step. The Encoder + KG-GNN compress this into a 256-d <b>latent state</b> that captures the clinical picture.</p>
+      </div>
+      <div class="card" style="background:var(--panel2)">
+        <h4 style="margin:0 0 6px;color:var(--purple)">🟪 MIDDLE stage</h4>
+        <p style="color:var(--muted);font-size:13px;margin:0">CausalResidual adds the action’s effect; the 3-layer GRU carries memory and rolls the state forward. This is where the model <b>simulates the future</b> — the core of the world model.</p>
+      </div>
+      <div class="card" style="background:var(--panel2)">
+        <h4 style="margin:0 0 6px;color:var(--accent2)">🟩 OUTPUT stage</h4>
+        <p style="color:var(--muted);font-size:13px;margin:0">The Decoder turns latents back into readable features; the 5-member ensemble outputs a <b>diagnosis distribution + calibrated uncertainty</b>; the reward head scores the path for the planner.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ RESULTS ============ -->
+<section id="results">
+  <h2><span class="ix">6</span> Key Results</h2>
+  <p class="lead">How well it predicts, and how it compares to a strong baseline retrieval system on 10 complex clinical cases.</p>
+
+  <div class="grid g3">
+    <div class="metric"><div class="val">0.040</div><div class="lab">MAE</div><div class="sub">next-state error</div></div>
+    <div class="metric"><div class="val">0.075</div><div class="lab">RMSE</div><div class="sub">root-mean-sq error</div></div>
+    <div class="metric"><div class="val">0.755</div><div class="lab">Accuracy</div><div class="sub">diagnosis ranking</div></div>
+    <div class="metric"><div class="val">0.030</div><div class="lab">ECE</div><div class="sub">calibration (lower=better)</div></div>
+    <div class="metric"><div class="val">0.80</div><div class="lab">1σ Coverage</div><div class="sub">honest uncertainty</div></div>
+    <div class="metric"><div class="val">10.1M</div><div class="lab">Parameters</div><div class="sub">in 18.8 min</div></div>
+  </div>
+
+  <div class="card" style="margin-top:18px">
+    <h3 style="margin:0 0 4px">GRAPES-SHAP vs Baseline RAG</h3>
+    <div class="lgnd"><span><span class="dot" style="background:#586d8f"></span>Baseline RAG</span><span><span class="dot" style="background:var(--accent2)"></span>GRAPES-SHAP</span></div>
+    <div class="bars" id="bars">
+      <div class="bar-row"><span class="nm">Clinical concept coverage</span><div class="track"><div class="fill f-base" data-w="70"></div></div><span class="vv">0.70</span></div>
+      <div class="bar-row"><span class="nm"></span><div class="track"><div class="fill f-grp" data-w="97"></div></div><span class="vv" style="color:var(--accent2)">0.97</span></div>
+      <div class="bar-row"><span class="nm">Answer completeness</span><div class="track"><div class="fill f-base" data-w="50"></div></div><span class="vv">0.50</span></div>
+      <div class="bar-row"><span class="nm"></span><div class="track"><div class="fill f-grp" data-w="84"></div></div><span class="vv" style="color:var(--accent2)">0.84</span></div>
+      <div class="bar-row"><span class="nm">Evidence citations (of 100%)</span><div class="track"><div class="fill f-base" data-w="39"></div></div><span class="vv">2.0 avg</span></div>
+      <div class="bar-row"><span class="nm"></span><div class="track"><div class="fill f-grp" data-w="100"></div></div><span class="vv" style="color:var(--accent2)">5.1 avg</span></div>
+    </div>
+    <div class="ok" style="margin-top:14px">📈 GRAPES-SHAP gives <b>+38% concept coverage</b>, <b>+68% completeness</b>, and <b>2.5× more citations</b> — plus SHAP explanations, calibrated uncertainty, and treatment planning the baseline doesn’t have.</div>
+  </div>
+</section>
+
+<!-- ============ HONESTY ============ -->
+<section id="honest">
+  <h2><span class="ix">7</span> Scope &amp; Honesty (for research integrity)</h2>
+  <p class="lead">Being precise about what this world model is — and isn’t — matters for a thesis defense.</p>
+  <div class="grid g2">
+    <div class="card">
+      <h3 style="margin:0 0 8px;color:var(--accent2)">✅ What it genuinely is</h3>
+      <p style="color:var(--muted);font-size:13.5px;margin:0">A real <b>latent world model</b> in the Dreamer / Ha–Schmidhuber family: it has a latent state, an action-conditioned transition (GRU + causal residual), a decoder, an uncertainty head, a reward head, and it performs <b>latent rollouts (“imagination”)</b> for planning. The architecture is legitimate and complete.</p>
+    </div>
+    <div class="card">
+      <h3 style="margin:0 0 8px;color:var(--warn)">⚠️ Caveats to disclose</h3>
+      <ul style="color:var(--muted);font-size:13px;margin:0;padding-left:18px">
+        <li>Trajectories are <b>semi-synthetic</b> (built from static DDXPlus by revealing symptoms step by step).</li>
+        <li>Actions = <b>“reveal evidence,”</b> not real treatments.</li>
+        <li>The reward head is <b>not supervised</b> by a clinical target.</li>
+        <li>Outcomes are <b>diagnosis probabilities</b>, not survival/readmission.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="note">📝 <b>Honest framing:</b> describe it as a <b>proof-of-concept latent world model / model-based reasoning module</b>, not a clinically validated treatment-outcome simulator. That claim is fully defensible.</div>
+</section>
+
+<footer>
+  GRAPES-SHAP · Single-page explainer · Generated for the thesis project · All numbers sourced from the project's metrics &amp; config files.
+</footer>
+</div>
+
+<script>
+// ---- nav scroll-spy ----
+const btns=[...document.querySelectorAll('#nav button')];
+const secs=btns.map(b=>document.getElementById(b.dataset.t));
+btns.forEach(b=>b.addEventListener('click',()=>{
+  document.getElementById(b.dataset.t).scrollIntoView({behavior:'smooth'});
+}));
+const spy=new IntersectionObserver(es=>{
+  es.forEach(e=>{
+    if(e.isIntersecting){
+      btns.forEach(x=>x.classList.remove('active'));
+      const b=btns.find(x=>x.dataset.t===e.target.id);
+      if(b)b.classList.add('active');
+    }
+  });
+},{rootMargin:'-45% 0px -50% 0px'});
+secs.forEach(s=>s&&spy.observe(s));
+
+// ---- animated bars when results in view ----
+const barWrap=document.getElementById('bars');
+const fills=[...barWrap.querySelectorAll('.fill')];
+const barObs=new IntersectionObserver(es=>{
+  es.forEach(e=>{ if(e.isIntersecting){ fills.forEach(f=>f.style.width=f.dataset.w+'%'); barObs.disconnect(); } });
+},{threshold:.3});
+barObs.observe(document.getElementById('results'));
+
+// ---- tensor flow animation ----
+const boxes=[...document.querySelectorAll('#tflow .box')];
+document.getElementById('animBtn').addEventListener('click',()=>{
+  boxes.forEach((b,i)=>{
+    b.style.transition='transform .35s, box-shadow .35s';
+    setTimeout(()=>{
+      b.style.transform='translateY(-10px) scale(1.06)';
+      b.style.boxShadow='0 10px 26px rgba(88,166,255,.35)';
+      setTimeout(()=>{b.style.transform='';b.style.boxShadow='';},420);
+    }, i*260);
+  });
+});
+</script>
+</body>
+</html>

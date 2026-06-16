@@ -1,13 +1,13 @@
 {
-  "mae": 0.03987371176481247,
-  "rmse": 0.07517775148153305,
-  "1sigma_coverage": 0.80444,
-  "ece": 0.029990283772349358,
+  "mae": 0.03888377174735069,
+  "rmse": 0.07431886345148087,
+  "1sigma_coverage": 0.80134,
+  "ece": 0.028902387246489525,
   "accuracy": 0.7549,
   "f1_macro": 0.17206678443216136,
-  "mean_shap": 0.7444798629633927,
+  "mean_shap": 0.733619598649481,
   "total_params": 10130060,
-  "training_time_min": 18.76,
+  "training_time_min": 18.84,
   "dataset": "DDXPlus + MedMCQA + MedQA",
   "device": "cuda"
 }
